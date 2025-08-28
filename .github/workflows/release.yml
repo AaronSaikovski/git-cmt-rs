@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  BIN_NAME: git-cmt-rs
+
+jobs:
+  build:
+    name: Build and package (${{ matrix.os }} / ${{ runner.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build (release)
+        run: cargo build --release
+
+      - name: Prepare package
+        shell: bash
+        run: |
+          set -eu
+          VER="${GITHUB_REF_NAME}"                    # e.g., v1.2.3
+          OS="${{ matrix.os }}"
+          ARCH="${{ runner.arch }}"                   # X64, ARM64
+          NAME="${{ env.BIN_NAME }}-${VER}-${OS}-${ARCH}"
+          DIST="dist"
+          mkdir -p "${DIST}"
+
+          # Resolve binary path/name
+          BIN="target/release/${{ env.BIN_NAME }}"
+          if [ "$OS" = "windows-latest" ]; then
+            BIN="target/release/${{ env.BIN_NAME }}.exe"
+          fi
+
+          # Create a staging dir with files we want to ship
+          STAGE="${DIST}/${NAME}"
+          mkdir -p "${STAGE}"
+          cp "${BIN}" "${STAGE}/"
+          [ -f LICENSE ] && cp LICENSE "${STAGE}/" || true
+          [ -f README.md ] && cp README.md "${STAGE}/" || true
+
+          if [ "$OS" = "windows-latest" ]; then
+            7z a "${DIST}/${NAME}.zip" "./${STAGE}/*"
+            certutil -hashfile "${DIST}/${NAME}.zip" SHA256 | sed -n '2p' > "${DIST}/${NAME}.zip.sha256"
+          else
+            tar -C "${DIST}" -czf "${DIST}/${NAME}.tar.gz" "${NAME}"
+            shasum -a 256 "${DIST}/${NAME}.tar.gz" | awk '{print $1}' > "${DIST}/${NAME}.tar.gz.sha256"
+          fi
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.os }}-${{ runner.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build]
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+
+      - name: List downloaded files
+        run: ls -lah
+
+      - name: Create/Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
+          files: |
+            *.tar.gz
+            *.tar.gz.sha256
+            *.zip
+            *.zip.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

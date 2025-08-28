@@ -1,0 +1,81 @@
+name: Rust CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-lint:
+    name: Build, Test, Lint (matrix)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo registry + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Show rustc/cargo versions
+        run: |
+          rustc -Vv
+          cargo -V
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Build (release)
+        run: cargo build --release
+
+      - name: Test
+        env:
+          # Ensure tests don't accidentally try to hit external APIs.
+          # Add mocks in your tests; leave the key unset for CI.
+          OPENAI_API_KEY: ""
+        run: cargo test --all --locked --no-default-features
+
+      - name: Upload binary artifact
+        if: runner.os == 'Linux' # change/remove this if you want artifacts for all OSes
+        uses: actions/upload-artifact@v4
+        with:
+          name: git-cmt-rs-${{ github.sha }}-linux-amd64
+          path: target/release/*
+          if-no-files-found: warn
+
+  # Optional: security audit (cargo-audit) on Linux only
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Run cargo audit
+        run: cargo audit --deny warnings
