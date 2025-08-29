@@ -111,10 +111,10 @@ Return ONLY valid JSON, no other text."#;
     let schema = serde_json::json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["type", "message"],
+        "required": ["type", "scope", "message"],  // <- include "scope"
         "properties": {
             "type":   { "type": "string", "enum": ["feat","fix","docs","style","refactor","test","chore"] },
-            "scope":  { "type": "string" },
+            "scope":  { "type": "string" },  // model can output "" if nothing fits
             "message":{ "type": "string", "maxLength": 50 }
         }
     });
