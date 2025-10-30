@@ -209,13 +209,9 @@ fn build_commit_line(commit: &Commit) -> String {
     out
 }
 
-fn confirm_commit(message: &str) -> Result<bool> {
-    eprintln!("\nGenerated commit message:");
-    eprintln!("  {}", message);
-    eprintln!();
-
+fn confirm_push() -> Result<bool> {
     loop {
-        eprint!("Proceed with commit? (y/n): ");
+        eprint!("Push commit to remote? (y/n): ");
         io::stderr().flush()?;
 
         let mut input = String::new();
@@ -267,20 +263,6 @@ async fn main() -> Result<()> {
 
     let line = build_commit_line(&commit);
 
-    // Ask for confirmation before committing
-    let should_commit = match confirm_commit(&line) {
-        Ok(confirmed) => confirmed,
-        Err(e) => {
-            eprintln!("Error during confirmation: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    if !should_commit {
-        eprintln!("Commit cancelled.");
-        return Ok(());
-    }
-
     // Run: git commit -e -m "<line>"
     let status = Command::new("git")
         .args(["commit", "-e", "-m", &line])
@@ -290,6 +272,34 @@ async fn main() -> Result<()> {
     if !status.success() {
         return Err(anyhow!("git commit failed with status: {status}"));
     }
+
+    eprintln!("Commit created successfully.");
+
+    // Ask for confirmation before pushing
+    let should_push = match confirm_push() {
+        Ok(confirmed) => confirmed,
+        Err(e) => {
+            eprintln!("Error during push confirmation: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if !should_push {
+        eprintln!("Push cancelled. Commit saved locally.");
+        return Ok(());
+    }
+
+    // Run: git push
+    let status = Command::new("git")
+        .args(["push"])
+        .status()
+        .context("failed to run `git push`")?;
+
+    if !status.success() {
+        return Err(anyhow!("git push failed with status: {status}"));
+    }
+
+    eprintln!("Changes pushed successfully!");
 
     Ok(())
 }
