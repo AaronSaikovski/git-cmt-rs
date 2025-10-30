@@ -1,6 +1,7 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::env;
+use std::io::{self, Write};
 use std::process::Command;
 
 const MAX_DIFF_CHARS: usize = 3072;
@@ -17,6 +18,19 @@ struct Commit {
 }
 
 // ---------- Git ----------
+fn stage_all_changes() -> Result<()> {
+    let status = Command::new("git")
+        .args(["add", "."])
+        .status()
+        .context("failed to run `git add .`")?;
+
+    if !status.success() {
+        return Err(anyhow!("git add failed with status: {}", status));
+    }
+
+    Ok(())
+}
+
 fn get_staged_changes() -> Result<String> {
     let output = Command::new("git")
         .args(["diff", "--cached", "-b"])
@@ -195,8 +209,37 @@ fn build_commit_line(commit: &Commit) -> String {
     out
 }
 
+fn confirm_push() -> Result<bool> {
+    loop {
+        eprint!("Push commit to remote? (y/n): ");
+        io::stderr().flush()?;
+
+        let mut input = String::new();
+        io::stdin()
+            .read_line(&mut input)
+            .context("failed to read user input")?;
+
+        match input.trim().to_lowercase().as_str() {
+            "y" | "yes" => return Ok(true),
+            "n" | "no" => return Ok(false),
+            _ => {
+                eprintln!("Please answer 'y' or 'n'");
+                continue;
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    match stage_all_changes() {
+        Ok(_) => eprintln!("Staged all changes with `git add .`"),
+        Err(e) => {
+            eprintln!("Failed to stage changes: {e}");
+            std::process::exit(1);
+        }
+    };
+
     let changes = match get_staged_changes() {
         Ok(d) => d,
         Err(e) => {
@@ -231,6 +274,34 @@ async fn main() -> Result<()> {
     if !status.success() {
         return Err(anyhow!("git commit failed with status: {status}"));
     }
+
+    eprintln!("Commit created successfully.");
+
+    // Ask for confirmation before pushing
+    let should_push = match confirm_push() {
+        Ok(confirmed) => confirmed,
+        Err(e) => {
+            eprintln!("Error during push confirmation: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if !should_push {
+        eprintln!("Push cancelled. Commit saved locally.");
+        return Ok(());
+    }
+
+    // Run: git push
+    let status = Command::new("git")
+        .args(["push"])
+        .status()
+        .context("failed to run `git push`")?;
+
+    if !status.success() {
+        return Err(anyhow!("git push failed with status: {status}"));
+    }
+
+    eprintln!("Changes pushed successfully!");
 
     Ok(())
 }
