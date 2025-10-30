@@ -1,10 +1,10 @@
 # git-cmt-rs
 
-An AI-powered Git commit message generator written in Rust that analyses your staged changes and creates [Conventional Commit](https://www.conventionalcommits.org/) messages using the OpenAI API.
+An AI-powered Git commit message generator written in Rust that automatically stages your changes and creates [Conventional Commit](https://www.conventionalcommits.org/) messages using the OpenAI API.
 
 ## Overview
 
-`git-cmt-rs` automatically generates meaningful commit messages based on your staged changes using OpenAI’s chat completion models. It follows the Conventional Commits specification and provides an interactive commit experience.
+`git-cmt-rs` automatically stages all changes with `git add .`, analyzes the diff, and generates meaningful commit messages using OpenAI's chat completion models. It follows the Conventional Commits specification and provides an interactive commit experience with editor review.
 
 Feel free to tweak the code to try different models, providers, or prompt templates. The implementation is simple and hackable.
 
@@ -77,10 +77,10 @@ The tool automatically stages all changes with `git add .` before analyzing and 
 ## How it works
 
 1. **Auto-staging**: Stages all changes with `git add .`
-2. **Diff Analysis**: Reads staged changes with `git diff --cached -b`
+2. **Diff Analysis**: Reads staged changes with `git diff --cached -b` (truncated to 3072 chars if necessary)
 3. **AI Processing**: Sends the diff to OpenAI with structured prompts and JSON schema enforcement
 4. **Message Generation**: Produces a commit object with `type`, `scope`, and `message`
-5. **Interactive Commit**: Opens your editor with the generated message
+5. **Interactive Commit**: Opens your editor with the generated message for review and editing
 6. **Final Commit**: Runs `git commit` with the approved message
 
 ## Commit Message Format
