@@ -17,6 +17,19 @@ struct Commit {
 }
 
 // ---------- Git ----------
+fn stage_all_changes() -> Result<()> {
+    let status = Command::new("git")
+        .args(["add", "."])
+        .status()
+        .context("failed to run `git add .`")?;
+
+    if !status.success() {
+        return Err(anyhow!("git add failed with status: {}", status));
+    }
+
+    Ok(())
+}
+
 fn get_staged_changes() -> Result<String> {
     let output = Command::new("git")
         .args(["diff", "--cached", "-b"])
@@ -197,6 +210,14 @@ fn build_commit_line(commit: &Commit) -> String {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    match stage_all_changes() {
+        Ok(_) => eprintln!("Staged all changes with `git add .`"),
+        Err(e) => {
+            eprintln!("Failed to stage changes: {e}");
+            std::process::exit(1);
+        }
+    };
+
     let changes = match get_staged_changes() {
         Ok(d) => d,
         Err(e) => {

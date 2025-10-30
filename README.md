@@ -18,7 +18,8 @@ This project is a Rust implementation of the Go based git-cmd project found [her
 - 📝 **Conventional Commits**: Generates messages in the `type(scope): description` format
 - 🎯 **Smart Analysis**: Understands code changes and suggests contextually appropriate messages
 - ⚡ **Interactive**: Opens your editor for final review before committing
-- 🔍 **Diff-aware**: Only analyzes staged changes
+- 📦 **Auto-staging**: Automatically stages all changes with `git add .` before analysis
+- 🔍 **Diff-aware**: Analyzes changes to generate contextually appropriate messages
 - 📏 **Length-aware**: Keeps commit messages concise (50 chars max for description)
 
 ## Installation
@@ -64,24 +65,23 @@ sudo mv target/release/git-cmt-rs /usr/local/bin/git-cmt-rs
 
 ### Basic Usage
 
-1. Stage your changes:
-   ```bash
-   git add <files>
-   ```
-2. Generate and commit:
+1. Run the tool (stages all changes automatically):
    ```bash
    git-cmt-rs
    ```
-3. Review and edit the generated message in your editor.
-4. Save and close to complete the commit.
+2. Review and edit the generated message in your editor.
+3. Save and close to complete the commit.
+
+The tool automatically stages all changes with `git add .` before analyzing and generating a commit message.
 
 ## How it works
 
-1. **Diff Analysis**: Reads staged changes with `git diff --cached -b`
-2. **AI Processing**: Sends the diff to OpenAI with structured prompts and JSON schema enforcement
-3. **Message Generation**: Produces a commit object with `type`, `scope`, and `message`
-4. **Interactive Commit**: Opens your editor with the generated message
-5. **Final Commit**: Runs `git commit` with the approved message
+1. **Auto-staging**: Stages all changes with `git add .`
+2. **Diff Analysis**: Reads staged changes with `git diff --cached -b`
+3. **AI Processing**: Sends the diff to OpenAI with structured prompts and JSON schema enforcement
+4. **Message Generation**: Produces a commit object with `type`, `scope`, and `message`
+5. **Interactive Commit**: Opens your editor with the generated message
+6. **Final Commit**: Runs `git commit` with the approved message
 
 ## Commit Message Format
 
@@ -165,7 +165,7 @@ This project is open source. See the repository for details.
 
 **"No staged changes found"**
 
-- Run `git add` before using `git-cmt-rs`.
+- This occurs when there are no modified files in your working directory. Make sure you have uncommitted changes before running `git-cmt-rs`.
 
 **"OPENAI_API_KEY not set"**
 
