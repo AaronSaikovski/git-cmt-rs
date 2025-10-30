@@ -8,7 +8,7 @@ An AI-powered Git commit message generator written in Rust that analyses your st
 
 Feel free to tweak the code to try different models, providers, or prompt templates. The implementation is simple and hackable.
 
-This project is a Rust implementation of the git-cmd project found [here](https://github.com/appliedgocode/git-cmt/)
+This project is a Rust implementation of the Go based git-cmd project found [here](https://github.com/appliedgocode/git-cmt/)
 
 #### All respects and credits to the original authors.
 
@@ -41,7 +41,7 @@ cargo build --release
 
 ```bash
 # Move binary to a directory in your PATH
-sudo mv target/release/git-cmt-rs /usr/local/bin/git-cmt
+sudo mv target/release/git-cmt-rs /usr/local/bin/git-cmt-rs
 ```
 
 ## Usage
@@ -51,6 +51,10 @@ sudo mv target/release/git-cmt-rs /usr/local/bin/git-cmt
 1. Set your OpenAI API key:
    ```bash
    export OPENAI_API_KEY="your-api-key-here"
+
+   or  
+   $env:export OPENAI_API_KEY="your-api-key-here"
+
    ```
 2. (Optional) Override model or base URL:
    ```bash
