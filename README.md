@@ -17,7 +17,8 @@ This project is a Rust implementation of the Go based git-cmd project found [her
 - 🤖 **AI-powered**: Uses OpenAI models (default: `gpt-4.1-mini`) to analyze code changes
 - 📝 **Conventional Commits**: Generates messages in the `type(scope): description` format
 - 🎯 **Smart Analysis**: Understands code changes and suggests contextually appropriate messages
-- ⚡ **Interactive**: Opens your editor for final review before committing
+- ✅ **User Confirmation**: Asks for y/n confirmation before committing
+- ⚡ **Interactive**: Opens your editor for final review and editing before committing
 - 📦 **Auto-staging**: Automatically stages all changes with `git add .` before analysis
 - 🔍 **Diff-aware**: Analyzes changes to generate contextually appropriate messages
 - 📏 **Length-aware**: Keeps commit messages concise (50 chars max for description)
@@ -69,8 +70,9 @@ sudo mv target/release/git-cmt-rs /usr/local/bin/git-cmt-rs
    ```bash
    git-cmt-rs
    ```
-2. Review and edit the generated message in your editor.
-3. Save and close to complete the commit.
+2. Review the generated commit message and confirm (y/n).
+3. If confirmed, the editor opens for final review and editing.
+4. Save and close the editor to complete the commit.
 
 The tool automatically stages all changes with `git add .` before analyzing and generating a commit message.
 
@@ -80,8 +82,9 @@ The tool automatically stages all changes with `git add .` before analyzing and 
 2. **Diff Analysis**: Reads staged changes with `git diff --cached -b` (truncated to 3072 chars if necessary)
 3. **AI Processing**: Sends the diff to OpenAI with structured prompts and JSON schema enforcement
 4. **Message Generation**: Produces a commit object with `type`, `scope`, and `message`
-5. **Interactive Commit**: Opens your editor with the generated message for review and editing
-6. **Final Commit**: Runs `git commit` with the approved message
+5. **User Confirmation**: Displays the generated message and asks for confirmation (y/n)
+6. **Interactive Commit**: Opens your editor with the message for final review and editing (if confirmed)
+7. **Final Commit**: Runs `git commit` with the approved message
 
 ## Commit Message Format
 
@@ -99,21 +102,43 @@ type(scope): description
 
 ```bash
 $ git-cmt-rs
-# Generated: feat(auth): add OAuth2 login integration
+Staged all changes with `git add .`
+Staged diff found; generating message for changes...
+Parsed commit: type='feat', scope='auth', message='add OAuth2 login integration'
+
+Generated commit message:
+  feat(auth): add OAuth2 login integration
+
+Proceed with commit? (y/n): y
+# Opens editor for final review
+# Save and close to complete the commit
 ```
 
 ### Bug Fix
 
 ```bash
 $ git-cmt-rs
-# Generated: fix(api): resolve null pointer in user validation
+Staged all changes with `git add .`
+Staged diff found; generating message for changes...
+Parsed commit: type='fix', scope='api', message='resolve null pointer in validation'
+
+Generated commit message:
+  fix(api): resolve null pointer in validation
+
+Proceed with commit? (y/n): n
+Commit cancelled.
 ```
 
-### Documentation
+### Declining the Commit
+
+Users can respond with `n` or `no` to cancel the commit without opening the editor:
 
 ```bash
 $ git-cmt-rs
-# Generated: docs(readme): update installation instructions
+Staged all changes with `git add .`
+...
+Proceed with commit? (y/n): n
+Commit cancelled.
 ```
 
 ## Configuration
@@ -127,10 +152,13 @@ $ git-cmt-rs
 
 ## Error Handling
 
-- **No staged changes** → exits with helpful message
-- **Missing API key** → prompts to set `OPENAI_API_KEY`
+- **Failed to stage changes** → exits if `git add .` fails
+- **No staged changes** → exits with helpful message if no changes exist
+- **Missing API key** → exits with message to set `OPENAI_API_KEY`
 - **API failures** → shows HTTP status and response body
 - **Invalid JSON** → shows raw model output for debugging
+- **User cancellation** → exits gracefully with "Commit cancelled." when user responds with `n` or `no`
+- **Invalid confirmation input** → prompts user to answer `y/n` again
 
 ## Development
 
@@ -183,3 +211,8 @@ This project is open source. See the repository for details.
   ```bash
   export EDITOR="code --wait"
   ```
+
+**"Commit cancelled" message**
+
+- This is expected behavior. The user can respond `n` or `no` at the confirmation prompt to cancel the commit without opening the editor.
+- The tool exits gracefully without making any changes to the repository.

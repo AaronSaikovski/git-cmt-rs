@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::env;
+use std::io::{self, Write};
 use std::process::Command;
 
 const MAX_DIFF_CHARS: usize = 3072;
@@ -208,6 +209,29 @@ fn build_commit_line(commit: &Commit) -> String {
     out
 }
 
+fn confirm_commit(message: &str) -> Result<bool> {
+    eprintln!("\nGenerated commit message:");
+    eprintln!("  {}", message);
+    eprintln!();
+
+    loop {
+        eprint!("Proceed with commit? (y/n): ");
+        io::stderr().flush()?;
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input).context("failed to read user input")?;
+
+        match input.trim().to_lowercase().as_str() {
+            "y" | "yes" => return Ok(true),
+            "n" | "no" => return Ok(false),
+            _ => {
+                eprintln!("Please answer 'y' or 'n'");
+                continue;
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     match stage_all_changes() {
@@ -242,6 +266,20 @@ async fn main() -> Result<()> {
     );
 
     let line = build_commit_line(&commit);
+
+    // Ask for confirmation before committing
+    let should_commit = match confirm_commit(&line) {
+        Ok(confirmed) => confirmed,
+        Err(e) => {
+            eprintln!("Error during confirmation: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if !should_commit {
+        eprintln!("Commit cancelled.");
+        return Ok(());
+    }
 
     // Run: git commit -e -m "<line>"
     let status = Command::new("git")
