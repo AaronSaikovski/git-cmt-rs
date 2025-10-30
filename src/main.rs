@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::io::{self, Write};
@@ -215,7 +215,9 @@ fn confirm_push() -> Result<bool> {
         io::stderr().flush()?;
 
         let mut input = String::new();
-        io::stdin().read_line(&mut input).context("failed to read user input")?;
+        io::stdin()
+            .read_line(&mut input)
+            .context("failed to read user input")?;
 
         match input.trim().to_lowercase().as_str() {
             "y" | "yes" => return Ok(true),
