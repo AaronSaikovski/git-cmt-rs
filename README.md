@@ -1,10 +1,10 @@
 # git-cmt-rs
 
-An AI-powered Git commit message generator written in Rust that automatically stages your changes and creates [Conventional Commit](https://www.conventionalcommits.org/) messages using the OpenAI API.
+An AI-powered Git commit message generator written in Rust that automatically stages your changes and creates [Conventional Commit](https://www.conventionalcommits.org/) messages. Works against the OpenAI API, a local [Ollama](https://ollama.com/) instance, or any OpenAI-compatible endpoint (LiteLLM, LocalAI, vLLM, ...).
 
 ## Overview
 
-`git-cmt-rs` automatically stages all changes with `git add .`, analyzes the diff, and generates meaningful commit messages using OpenAI's chat completion models. It follows the Conventional Commits specification and provides an interactive commit experience with editor review.
+`git-cmt-rs` automatically stages all changes with `git add .`, analyzes the diff, and generates a meaningful commit message using whichever chat-completions backend you point it at. It follows the Conventional Commits specification and provides an interactive commit experience with editor review.
 
 Feel free to tweak the code to try different models, providers, or prompt templates. The implementation is simple and hackable.
 
@@ -14,7 +14,8 @@ This project is a Rust implementation of the Go based git-cmd project found [her
 
 ## Features
 
-- 🤖 **AI-powered**: Uses OpenAI models (default: `gpt-4.1-mini`) to analyze code changes
+- 🤖 **AI-powered**: Works with hosted OpenAI (default: `gpt-4.1-mini`), local Ollama, or any OpenAI-compatible proxy
+- 🔌 **Backend-agnostic**: Switch providers by setting `OPENAI_BASE_URL` — no code changes
 - 📝 **Conventional Commits**: Generates messages in the `type(scope): description` format
 - 🎯 **Smart Analysis**: Understands code changes and suggests contextually appropriate messages
 - ✅ **Push Confirmation**: Asks for y/n confirmation before pushing to remote
@@ -29,7 +30,7 @@ This project is a Rust implementation of the Go based git-cmd project found [her
 
 - Rust (1.70+ recommended)
 - Git
-- An OpenAI API key
+- One of: an OpenAI API key, a running Ollama instance, or another OpenAI-compatible endpoint
 
 ### Build from source
 
@@ -50,6 +51,8 @@ sudo mv target/release/git-cmt-rs /usr/local/bin/git-cmt-rs
 
 ### Setup
 
+#### Hosted OpenAI
+
 1. Set your OpenAI API key:
    ```bash
    export OPENAI_API_KEY="your-api-key-here"
@@ -63,6 +66,42 @@ sudo mv target/release/git-cmt-rs /usr/local/bin/git-cmt-rs
    export OPENAI_MODEL="gpt-4.1-mini"
    export OPENAI_BASE_URL="https://api.openai.com/v1"
    ```
+3. (Optional) For strict JSON Schema enforcement (hosted OpenAI only):
+   ```bash
+   export OPENAI_RESPONSE_FORMAT="json_schema"
+   ```
+
+#### Local Ollama instance
+
+`git-cmt-rs` speaks the OpenAI HTTP shape, so it works against Ollama's
+OpenAI-compatible endpoint with no code changes:
+
+```bash
+# Start Ollama and pull a code-capable model
+ollama serve &
+ollama pull qwen2.5-coder
+
+# Point git-cmt-rs at the local endpoint
+export OPENAI_BASE_URL="http://localhost:11434/v1"
+export OPENAI_MODEL="qwen2.5-coder"   # or llama3.2, mistral, codellama, ...
+unset OPENAI_API_KEY                   # Ollama ignores auth
+```
+
+The default `OPENAI_RESPONSE_FORMAT` is `json_object`, which Ollama supports.
+Don't set it to `json_schema` — Ollama's `/v1` endpoint doesn't implement
+OpenAI's strict structured-outputs feature.
+
+#### Local OpenAI-compatible proxy (LiteLLM, LocalAI, vLLM, ...)
+
+```bash
+export OPENAI_BASE_URL="http://localhost:4000/v1"   # whatever your proxy serves
+export OPENAI_MODEL="your-model-name"
+# Set OPENAI_API_KEY only if your proxy requires it; otherwise leave it unset.
+```
+
+If your proxy supports strict JSON Schema, you can opt in with
+`OPENAI_RESPONSE_FORMAT=json_schema`. If it rejects `response_format`
+entirely, use `OPENAI_RESPONSE_FORMAT=none`.
 
 ### Basic Usage
 
@@ -81,7 +120,7 @@ The tool automatically stages all changes with `git add .` before analyzing and 
 
 1. **Auto-staging**: Stages all changes with `git add .`
 2. **Diff Analysis**: Reads staged changes with `git diff --cached -b` (truncated to 3072 chars if necessary)
-3. **AI Processing**: Sends the diff to OpenAI with structured prompts and JSON schema enforcement
+3. **AI Processing**: Sends the diff to the configured LLM backend (OpenAI / Ollama / proxy) with structured prompts; response format defaults to `json_object` for broad compatibility, with opt-in `json_schema` for hosted OpenAI
 4. **Message Generation**: Produces a commit object with `type`, `scope`, and `message`
 5. **Interactive Commit**: Opens your editor with the message for final review and editing
 6. **Create Commit**: Runs `git commit` with the approved message
@@ -149,16 +188,22 @@ Push cancelled. Commit saved locally.
 
 ### Environment Variables
 
-- `OPENAI_API_KEY` – required for API access
+- `OPENAI_API_KEY` – API key (required for hosted OpenAI; optional for Ollama
+  and most local proxies)
 - `OPENAI_MODEL` – model to use (default: `gpt-4.1-mini`)
 - `OPENAI_BASE_URL` – API endpoint (default: `https://api.openai.com/v1`)
+- `OPENAI_RESPONSE_FORMAT` – one of:
+  - `json_object` (default) – broad compatibility (OpenAI, Ollama, most proxies)
+  - `json_schema` – strict structured outputs (hosted OpenAI only)
+  - `none` – omit `response_format` entirely (oldest backends)
 - `EDITOR` – editor for reviewing commits (defaults to system default)
 
 ## Error Handling
 
 - **Failed to stage changes** → exits if `git add .` fails
 - **No staged changes** → exits with helpful message if no changes exist
-- **Missing API key** → exits with message to set `OPENAI_API_KEY`
+- **Missing API key** → only an issue when the configured backend requires one; against hosted OpenAI you'll see a 401 with the API's response body
+- **Invalid `OPENAI_RESPONSE_FORMAT`** → exits with the list of valid values (`json_object`, `json_schema`, `none`)
 - **API failures** → shows HTTP status and response body
 - **Invalid JSON** → shows raw model output for debugging
 - **Commit creation failed** → exits with error message if `git commit` fails
@@ -203,13 +248,17 @@ This project is open source. See the repository for details.
 
 **"OPENAI_API_KEY not set"**
 
-- Export your OpenAI API key.
+- Only required for hosted OpenAI. Export your key, or unset it and point
+  `OPENAI_BASE_URL` at a local Ollama / proxy that doesn't need auth.
 
-**"OpenAI request failed"**
+**"LLM request failed"**
 
-- Check your internet connection.
-- Verify your API key.
-- Ensure your account has credits and API access.
+- Check that the backend is reachable (`curl $OPENAI_BASE_URL/models`).
+- For hosted OpenAI: verify your API key and that your account has credits.
+- For Ollama: confirm `ollama serve` is running and the model is pulled
+  (`ollama list`).
+- If the backend rejects `response_format`, try
+  `export OPENAI_RESPONSE_FORMAT=json_object` or `=none`.
 
 **Editor not opening**
 
