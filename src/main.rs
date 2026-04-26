@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::io::{self, Write};
@@ -72,20 +72,16 @@ struct Message {
 }
 
 #[derive(Debug, Serialize)]
-struct ResponseFormat {
-    #[serde(rename = "type")]
-    r#type: String,
-    // json_schema is supported for structured outputs. If your account/region
-    // lacks this feature, you can omit `response_format` entirely.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    json_schema: Option<JsonSchema>,
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ResponseFormat {
+    JsonObject,
+    JsonSchema { json_schema: JsonSchema },
 }
 
 #[derive(Debug, Serialize)]
 struct JsonSchema {
     name: String,
     schema: serde_json::Value,
-    // force the model to only output the object (no extra text)
     strict: bool,
 }
 
@@ -104,9 +100,34 @@ struct ChoiceMessage {
     content: String,
 }
 
+// Default is `json_object` so the tool works against Ollama and most local
+// proxies; hosted OpenAI users can opt back into strict schema validation
+// with `json_schema`.
+fn build_response_format(
+    raw: Option<&str>,
+    schema: serde_json::Value,
+) -> Result<Option<ResponseFormat>> {
+    match raw.unwrap_or("json_object").trim().to_lowercase().as_str() {
+        "json_object" => Ok(Some(ResponseFormat::JsonObject)),
+        "json_schema" => Ok(Some(ResponseFormat::JsonSchema {
+            json_schema: JsonSchema {
+                name: "commit_message".into(),
+                schema,
+                strict: true,
+            },
+        })),
+        "none" => Ok(None),
+        other => Err(anyhow!(
+            "OPENAI_RESPONSE_FORMAT must be one of: json_object, json_schema, none (got: {other:?})"
+        )),
+    }
+}
+
 // ---------- LLM ----------
 async fn generate_message(changes: &str) -> Result<Commit> {
-    let api_key = env::var("OPENAI_API_KEY").context("OPENAI_API_KEY env var is not set")?;
+    // API key is optional: local backends like Ollama ignore auth, and some
+    // proxies reject an empty `Authorization: Bearer` header.
+    let api_key = env::var("OPENAI_API_KEY").ok().filter(|k| !k.is_empty());
     let base =
         env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
     let model = env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4.1-mini".to_string());
@@ -121,18 +142,18 @@ Return ONLY valid JSON, no other text."#;
 
     let user = format!("Changes:\n{changes}");
 
-    // JSON Schema to enforce structure (Structured Outputs).
     let schema = serde_json::json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["type", "scope", "message"],  // <- include "scope"
+        "required": ["type", "scope", "message"],
         "properties": {
             "type":   { "type": "string", "enum": ["feat","fix","docs","style","refactor","test","chore"] },
-            "scope":  { "type": "string" },  // model can output "" if nothing fits
+            "scope":  { "type": "string" },
             "message":{ "type": "string", "maxLength": 50 }
         }
     });
 
+    let response_format_raw = env::var("OPENAI_RESPONSE_FORMAT").ok();
     let req = ChatRequest {
         model,
         messages: vec![
@@ -146,41 +167,31 @@ Return ONLY valid JSON, no other text."#;
             },
         ],
         temperature: 0.0,
-        response_format: Some(ResponseFormat {
-            r#type: "json_schema".into(), // fallback: use "json_object" if json_schema isn't enabled
-            json_schema: Some(JsonSchema {
-                name: "commit_message".into(),
-                schema,
-                strict: true,
-            }),
-        }),
+        response_format: build_response_format(response_format_raw.as_deref(), schema)?,
     };
 
     let client = reqwest::Client::new();
-    let resp = client
-        .post(format!("{base}/chat/completions"))
-        .bearer_auth(api_key)
+    let mut req_builder = client.post(format!("{base}/chat/completions"));
+    if let Some(key) = api_key {
+        req_builder = req_builder.bearer_auth(key);
+    }
+    let resp = req_builder
         .json(&req)
         .send()
         .await
-        .context("OpenAI request failed")?;
+        .context("LLM request failed")?;
 
-    // Check status first; only consume the body on the error path.
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().await.unwrap_or_default(); // consumes resp
+        let text = resp.text().await.unwrap_or_default();
         return Err(anyhow!(
-            "OpenAI request failed with status {}: {}",
+            "LLM request failed with status {}: {}",
             status,
             text
         ));
     }
 
-    // If we got here, resp is still available and unconsumed.
-    let parsed: ChatResponse = resp
-        .json()
-        .await
-        .context("failed to parse OpenAI response")?;
+    let parsed: ChatResponse = resp.json().await.context("failed to parse LLM response")?;
 
     let content = parsed
         .choices
@@ -304,4 +315,151 @@ async fn main() -> Result<()> {
     eprintln!("Changes pushed successfully!");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_schema() -> serde_json::Value {
+        serde_json::json!({})
+    }
+
+    // ---------- build_response_format ----------
+
+    #[test]
+    fn response_format_default_is_json_object() {
+        let f = build_response_format(None, empty_schema()).unwrap();
+        assert!(matches!(f, Some(ResponseFormat::JsonObject)));
+    }
+
+    #[test]
+    fn response_format_explicit_json_object() {
+        let f = build_response_format(Some("json_object"), empty_schema()).unwrap();
+        assert!(matches!(f, Some(ResponseFormat::JsonObject)));
+    }
+
+    #[test]
+    fn response_format_json_schema_has_strict_and_name() {
+        let f = build_response_format(Some("json_schema"), empty_schema()).unwrap();
+        match f {
+            Some(ResponseFormat::JsonSchema { json_schema }) => {
+                assert_eq!(json_schema.name, "commit_message");
+                assert!(json_schema.strict);
+            }
+            other => panic!("expected JsonSchema variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn response_format_none_returns_no_payload() {
+        let f = build_response_format(Some("none"), empty_schema()).unwrap();
+        assert!(f.is_none());
+    }
+
+    #[test]
+    fn response_format_is_case_insensitive_and_trimmed() {
+        let f = build_response_format(Some("  JSON_Object  "), empty_schema()).unwrap();
+        assert!(matches!(f, Some(ResponseFormat::JsonObject)));
+    }
+
+    #[test]
+    fn response_format_unknown_value_lists_valid_choices() {
+        let err = build_response_format(Some("garbage"), empty_schema()).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("json_object"), "msg: {msg}");
+        assert!(msg.contains("json_schema"), "msg: {msg}");
+        assert!(msg.contains("none"), "msg: {msg}");
+        assert!(msg.contains("garbage"), "msg: {msg}");
+    }
+
+    // ---------- ResponseFormat wire format (regression guard for the enum tag) ----------
+
+    #[test]
+    fn json_object_serializes_with_type_only() {
+        let v = serde_json::to_value(ResponseFormat::JsonObject).unwrap();
+        assert_eq!(v, serde_json::json!({ "type": "json_object" }));
+    }
+
+    #[test]
+    fn json_schema_serializes_with_nested_schema() {
+        let rf = ResponseFormat::JsonSchema {
+            json_schema: JsonSchema {
+                name: "commit_message".into(),
+                schema: serde_json::json!({ "type": "object" }),
+                strict: true,
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(rf).unwrap(),
+            serde_json::json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "commit_message",
+                    "schema": { "type": "object" },
+                    "strict": true,
+                }
+            })
+        );
+    }
+
+    // ---------- build_commit_line ----------
+
+    #[test]
+    fn commit_line_with_scope() {
+        let c = Commit {
+            r#type: "feat".into(),
+            scope: "auth".into(),
+            message: "add login".into(),
+        };
+        assert_eq!(build_commit_line(&c), "feat(auth): add login");
+    }
+
+    #[test]
+    fn commit_line_without_scope() {
+        let c = Commit {
+            r#type: "fix".into(),
+            scope: "".into(),
+            message: "off-by-one".into(),
+        };
+        assert_eq!(build_commit_line(&c), "fix: off-by-one");
+    }
+
+    #[test]
+    fn commit_line_drops_whitespace_only_scope() {
+        let c = Commit {
+            r#type: "chore".into(),
+            scope: "   ".into(),
+            message: "tidy".into(),
+        };
+        assert_eq!(build_commit_line(&c), "chore: tidy");
+    }
+
+    #[test]
+    fn commit_line_trims_all_fields() {
+        let c = Commit {
+            r#type: "  docs  ".into(),
+            scope: "  readme  ".into(),
+            message: "  fix typo  ".into(),
+        };
+        assert_eq!(build_commit_line(&c), "docs(readme): fix typo");
+    }
+
+    // ---------- Commit deserialization (model output parsing) ----------
+
+    #[test]
+    fn commit_parses_full_json() {
+        let c: Commit =
+            serde_json::from_str(r#"{"type":"feat","scope":"api","message":"add endpoint"}"#)
+                .unwrap();
+        assert_eq!(c.r#type, "feat");
+        assert_eq!(c.scope, "api");
+        assert_eq!(c.message, "add endpoint");
+    }
+
+    #[test]
+    fn commit_missing_scope_defaults_to_empty() {
+        let c: Commit = serde_json::from_str(r#"{"type":"fix","message":"x"}"#).unwrap();
+        assert_eq!(c.scope, "");
+    }
 }
