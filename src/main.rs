@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::io::{self, Write};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 const MAX_DIFF_CHARS: usize = 3072;
 
@@ -53,6 +53,32 @@ fn get_staged_changes() -> Result<String> {
     }
 
     Ok(diff)
+}
+
+fn current_branch() -> Result<String> {
+    let output = Command::new("git")
+        .args(["symbolic-ref", "--short", "HEAD"])
+        .output()
+        .context("failed to run `git symbolic-ref`")?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "could not determine current branch (detached HEAD?)"
+        ));
+    }
+    Ok(String::from_utf8(output.stdout)
+        .context("git output was not valid UTF-8")?
+        .trim()
+        .to_string())
+}
+
+fn has_upstream() -> bool {
+    Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 // ---------- OpenAI Chat Completions request/response ----------
@@ -302,11 +328,14 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Run: git push
-    let status = Command::new("git")
-        .args(["push"])
-        .status()
-        .context("failed to run `git push`")?;
+    let mut push_cmd = Command::new("git");
+    push_cmd.arg("push");
+    if !has_upstream() {
+        let branch = current_branch()?;
+        eprintln!("No upstream set; pushing with `--set-upstream origin {branch}`");
+        push_cmd.args(["--set-upstream", "origin", &branch]);
+    }
+    let status = push_cmd.status().context("failed to run `git push`")?;
 
     if !status.success() {
         return Err(anyhow!("git push failed with status: {status}"));
