@@ -30,7 +30,10 @@ jobs:
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             platform: linux-aarch64
-          - os: macos-13
+          # Cross-compile Intel macOS from the Apple Silicon runner.
+          # macos-13 (native Intel) has very long queue times; macos-latest
+          # has rustup tooling and the Apple SDK to target x86_64 cleanly.
+          - os: macos-latest
             target: x86_64-apple-darwin
             platform: macos-x86_64
           - os: macos-latest
