@@ -227,11 +227,72 @@ Return ONLY valid JSON, no other text."#;
         .message
         .content;
 
-    // Model should have returned strict JSON per schema.
-    let commit: Commit = serde_json::from_str(&content)
-        .with_context(|| format!("failed to parse commit JSON (raw: {content:?})"))?;
+    // Model should have returned strict JSON per schema, but local models
+    // (e.g. Gemma via Ollama) often wrap it in markdown fences or stray text.
+    parse_commit(&content)
+}
 
-    Ok(commit)
+// Parse a `Commit` from raw model output. Tries the text as-is first, then
+// falls back to extracting the first balanced `{ ... }` object embedded in
+// surrounding prose / markdown code fences.
+fn parse_commit(content: &str) -> Result<Commit> {
+    if let Ok(commit) = serde_json::from_str::<Commit>(content.trim()) {
+        return Ok(commit);
+    }
+
+    if let Some(obj) = extract_json_object(content)
+        && let Ok(commit) = serde_json::from_str::<Commit>(obj)
+    {
+        return Ok(commit);
+    }
+
+    Err(anyhow!("failed to parse commit JSON (raw: {content:?})"))
+}
+
+// Find the first balanced, brace-matched `{ ... }` object in `s`. String and
+// escape aware, so braces inside JSON string values don't throw off the depth
+// count. Skips leading garbage like a stray `{` that never closes.
+fn extract_json_object(s: &str) -> Option<&str> {
+    let bytes = s.as_bytes();
+    for (start, _) in s.match_indices('{') {
+        if let Some(end) = match_object(bytes, start) {
+            return Some(&s[start..=end]);
+        }
+    }
+    None
+}
+
+// Forward brace-match from the opening `{` at `start`; returns the byte index
+// of the matching `}`, or `None` if the object never closes.
+fn match_object(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut escaped = false;
+
+    for (i, &b) in bytes.iter().enumerate().skip(start) {
+        if in_str {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_str = true,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn build_commit_line(commit: &Commit) -> String {
@@ -490,5 +551,46 @@ mod tests {
     fn commit_missing_scope_defaults_to_empty() {
         let c: Commit = serde_json::from_str(r#"{"type":"fix","message":"x"}"#).unwrap();
         assert_eq!(c.scope, "");
+    }
+
+    // ---------- parse_commit (lenient model-output parsing) ----------
+
+    #[test]
+    fn parse_commit_accepts_plain_json() {
+        let c = parse_commit(r#"{"type":"feat","scope":"api","message":"add endpoint"}"#).unwrap();
+        assert_eq!(c.r#type, "feat");
+        assert_eq!(c.scope, "api");
+    }
+
+    #[test]
+    fn parse_commit_strips_markdown_fences() {
+        let raw = "```json\n{\n  \"type\": \"chore\",\n  \"scope\": \"deps\",\n  \"message\": \"bump\"\n}\n```";
+        let c = parse_commit(raw).unwrap();
+        assert_eq!(c.r#type, "chore");
+        assert_eq!(c.scope, "deps");
+        assert_eq!(c.message, "bump");
+    }
+
+    #[test]
+    fn parse_commit_handles_gemma_stray_brace_and_double_fence() {
+        // Exact shape emitted by a Gemma model via Ollama: a `json` label, a
+        // stray unclosed `{`, then a fenced object.
+        let raw = "json\n{```json\n{\n  \"type\": \"chore\",\n  \"scope\": \"deps\",\n  \"message\": \"Update dependencies\"\n}\n```";
+        let c = parse_commit(raw).unwrap();
+        assert_eq!(c.r#type, "chore");
+        assert_eq!(c.scope, "deps");
+        assert_eq!(c.message, "Update dependencies");
+    }
+
+    #[test]
+    fn parse_commit_preserves_braces_inside_message() {
+        let raw = "sure!\n{\"type\":\"fix\",\"scope\":\"\",\"message\":\"handle {x} token\"}";
+        let c = parse_commit(raw).unwrap();
+        assert_eq!(c.message, "handle {x} token");
+    }
+
+    #[test]
+    fn parse_commit_errors_on_no_json() {
+        assert!(parse_commit("I could not generate a commit message.").is_err());
     }
 }
