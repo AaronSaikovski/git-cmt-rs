@@ -33,30 +33,33 @@ cargo test
 
 Tests live in `#[cfg(test)] mod tests` at the bottom of `src/main.rs` and
 cover the pure functions (`build_response_format`, `build_commit_line`,
-`Commit` deserialization, and `ResponseFormat` wire-format serialization).
+`Commit` deserialization, `parse_commit` tolerant parsing, and
+`ResponseFormat` wire-format serialization).
 Network, git, and stdin paths are deliberately untested — the CLI is a
 one-shot orchestrator over real subprocesses.
 
 ## Architecture
 
-The entire application lives in **src/main.rs** (~308 lines) as a single-file design.
+The entire application lives in **src/main.rs** as a single-file design.
 
 ### Flow
 
-`stage_all_changes()` → `get_staged_changes()` → `generate_message()` → `build_commit_line()` → `git commit -e` → `confirm_push()` → `git push`
+`stage_all_changes()` → `get_staged_changes()` → `generate_message()` → `parse_commit()` → `build_commit_line()` → `git commit -e` → `confirm_push()` → `git push`
 
 ### Key Components
 
 - **Domain types**: `Commit` struct with `r#type` (Conventional Commit types enum), `scope` (optional), `message`
 - **Git operations** (sync): `stage_all_changes()` runs `git add .`; `get_staged_changes()` runs `git diff --cached -b` and truncates to 3072 chars
-- **OpenAI integration** (async via reqwest): `generate_message()` sends diff with strict JSON Schema for structured outputs; temperature=0.0
+- **OpenAI integration** (async via reqwest): `generate_message()` sends the diff with a configurable `response_format` (defaults to `json_object`); temperature=0.0; the `Authorization` header is omitted when `OPENAI_API_KEY` is empty/unset so local backends work
+- **Tolerant parsing**: `parse_commit()` parses raw model output, falling back to `extract_json_object()` (a string/escape-aware balanced-brace scan) so fenced or prose-wrapped JSON from local models still parses
 - **User interaction**: `confirm_push()` reads stdin for y/n; commit uses `-e` flag for editor review
 
 ### Environment Variables
 
-- `OPENAI_API_KEY` (required)
+- `OPENAI_API_KEY` (required for hosted OpenAI; optional for Ollama/MLX/most local proxies)
 - `OPENAI_MODEL` (default: `gpt-4.1-mini`)
 - `OPENAI_BASE_URL` (default: `https://api.openai.com/v1`)
+- `OPENAI_RESPONSE_FORMAT` (`json_object` default, `json_schema` for strict hosted-OpenAI outputs, or `none`)
 
 ## CI/CD
 

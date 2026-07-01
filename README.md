@@ -91,6 +91,31 @@ The default `OPENAI_RESPONSE_FORMAT` is `json_object`, which Ollama supports.
 Don't set it to `json_schema` — Ollama's `/v1` endpoint doesn't implement
 OpenAI's strict structured-outputs feature.
 
+#### Local MLX server (Apple Silicon)
+
+Apple's [MLX](https://github.com/ml-explore/mlx) (`mlx_lm.server`, and wrappers
+such as omlx) also expose an OpenAI-compatible endpoint:
+
+```bash
+# Start the MLX server (example port; use whatever yours serves)
+mlx_lm.server --model Qwen3-14B-MLX-4bit --port 11436
+
+# Point git-cmt-rs at it
+export OPENAI_BASE_URL="http://127.0.0.1:11436/v1"
+export OPENAI_MODEL="Qwen3-14B-MLX-4bit"   # must match the loaded model
+unset OPENAI_API_KEY                        # local server ignores auth
+```
+
+MLX enforces `response_format` less strictly than Ollama, so models may return
+JSON wrapped in prose or markdown fences — `git-cmt-rs` tolerates this (see
+[Robust JSON parsing](#robust-json-parsing)). If your MLX build rejects
+`response_format`, set `OPENAI_RESPONSE_FORMAT=none`.
+
+> **Qwen3 note:** Qwen3 emits `<think>…</think>` reasoning before its answer by
+> default. The parser skips it, but you can suppress it for faster, cleaner
+> output by appending `/no_think` to your prompt or disabling thinking in the
+> server's chat template.
+
 #### Local OpenAI-compatible proxy (LiteLLM, LocalAI, vLLM, ...)
 
 ```bash
@@ -102,6 +127,17 @@ export OPENAI_MODEL="your-model-name"
 If your proxy supports strict JSON Schema, you can opt in with
 `OPENAI_RESPONSE_FORMAT=json_schema`. If it rejects `response_format`
 entirely, use `OPENAI_RESPONSE_FORMAT=none`.
+
+### Robust JSON parsing
+
+Local models don't always honor `response_format` and may wrap their JSON in
+markdown code fences, prefix it with a `json` label, or emit reasoning text
+first (e.g. Qwen3's `<think>` blocks, Gemma's fenced output). Rather than
+failing, `git-cmt-rs` first tries to parse the raw response, then falls back to
+extracting the first balanced `{ ... }` object embedded in the text. The
+fallback is string- and escape-aware, so braces inside the commit message don't
+throw it off. In practice this means the tool works with a wide range of local
+models regardless of how chatty their formatting is.
 
 ### Basic Usage
 
@@ -121,7 +157,7 @@ The tool automatically stages all changes with `git add .` before analyzing and 
 1. **Auto-staging**: Stages all changes with `git add .`
 2. **Diff Analysis**: Reads staged changes with `git diff --cached -b` (truncated to 3072 chars if necessary)
 3. **AI Processing**: Sends the diff to the configured LLM backend (OpenAI / Ollama / proxy) with structured prompts; response format defaults to `json_object` for broad compatibility, with opt-in `json_schema` for hosted OpenAI
-4. **Message Generation**: Produces a commit object with `type`, `scope`, and `message`
+4. **Message Generation**: Produces a commit object with `type`, `scope`, and `message`, tolerating fenced or prose-wrapped JSON from local models (see [Robust JSON parsing](#robust-json-parsing))
 5. **Interactive Commit**: Opens your editor with the message for final review and editing
 6. **Create Commit**: Runs `git commit` with the approved message
 7. **Push Confirmation**: Asks user to confirm push to remote (y/n)
