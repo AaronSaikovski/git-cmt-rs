@@ -33,7 +33,8 @@ cargo test
 
 Tests live in `#[cfg(test)] mod tests` at the bottom of `src/main.rs` and
 cover the pure functions (`build_response_format`, `build_commit_line`,
-`Commit` deserialization, `parse_commit` tolerant parsing, and
+`Commit` deserialization, `parse_commit` tolerant parsing — including
+flattened `[key, value, ...]` arrays and underscore-decorated keys — and
 `ResponseFormat` wire-format serialization).
 Network, git, and stdin paths are deliberately untested — the CLI is a
 one-shot orchestrator over real subprocesses.
@@ -51,7 +52,7 @@ The entire application lives in **src/main.rs** as a single-file design.
 - **Domain types**: `Commit` struct with `r#type` (Conventional Commit types enum), `scope` (optional), `message`
 - **Git operations** (sync): `stage_all_changes()` runs `git add .`; `get_staged_changes()` runs `git diff --cached -b` and truncates to 3072 chars
 - **OpenAI integration** (async via reqwest): `generate_message()` sends the diff with a configurable `response_format` (defaults to `json_object`); temperature=0.0; the `Authorization` header is omitted when `OPENAI_API_KEY` is empty/unset so local backends work
-- **Tolerant parsing**: `parse_commit()` parses raw model output, falling back to `extract_json_object()` (a string/escape-aware balanced-brace scan) so fenced or prose-wrapped JSON from local models still parses
+- **Tolerant parsing**: `parse_commit()` parses raw model output, then falls back to coercing generic JSON via `commit_from_value()` (accepts objects with decorated keys like `_type` and flattened `[key, value, ...]` arrays, normalizing keys with `normalize_key()`); as a last resort `extract_json_fragment()` (a string/escape-aware balanced-delimiter scan for `{...}` or `[...]`) pulls JSON out of fenced or prose-wrapped output from local models
 - **User interaction**: `confirm_push()` reads stdin for y/n; commit uses `-e` flag for editor review
 
 ### Environment Variables
