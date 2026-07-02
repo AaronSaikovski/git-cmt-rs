@@ -7,7 +7,7 @@ use std::process::{Command, Stdio};
 const MAX_DIFF_CHARS: usize = 3072;
 
 // ---------- Domain types ----------
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 struct Commit {
     #[serde(default)]
     r#type: String, // feat, fix, docs, etc.
@@ -233,15 +233,34 @@ Return ONLY valid JSON, no other text."#;
 }
 
 // Parse a `Commit` from raw model output. Tries the text as-is first, then
-// falls back to extracting the first balanced `{ ... }` object embedded in
-// surrounding prose / markdown code fences.
+// falls back to extracting the first balanced JSON object/array embedded in
+// surrounding prose / markdown code fences and coercing it into a `Commit`.
 fn parse_commit(content: &str) -> Result<Commit> {
-    if let Ok(commit) = serde_json::from_str::<Commit>(content.trim()) {
+    let trimmed = content.trim();
+
+    // Fast path: strict `{ "type", "scope", "message" }` object. Require a
+    // meaningful field so odd-keyed objects (e.g. `{"_type": ...}`) that
+    // deserialize into an all-empty `Commit` fall through to coercion below.
+    if let Ok(commit) = serde_json::from_str::<Commit>(trimmed)
+        && (!commit.r#type.trim().is_empty() || !commit.message.trim().is_empty())
+    {
         return Ok(commit);
     }
 
-    if let Some(obj) = extract_json_object(content)
-        && let Ok(commit) = serde_json::from_str::<Commit>(obj)
+    // Lenient path: parse as generic JSON and coerce. Handles objects with
+    // decorated keys (`_type`) and the flattened `[key, value, ...]` arrays
+    // some local models emit instead of an object.
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed)
+        && let Some(commit) = commit_from_value(&value)
+    {
+        return Ok(commit);
+    }
+
+    // Last resort: scan for the first balanced JSON fragment embedded in prose
+    // or markdown fences, then coerce it.
+    if let Some(fragment) = extract_json_fragment(content)
+        && let Ok(value) = serde_json::from_str::<serde_json::Value>(fragment)
+        && let Some(commit) = commit_from_value(&value)
     {
         return Ok(commit);
     }
@@ -249,22 +268,85 @@ fn parse_commit(content: &str) -> Result<Commit> {
     Err(anyhow!("failed to parse commit JSON (raw: {content:?})"))
 }
 
-// Find the first balanced, brace-matched `{ ... }` object in `s`. String and
-// escape aware, so braces inside JSON string values don't throw off the depth
-// count. Skips leading garbage like a stray `{` that never closes.
-fn extract_json_object(s: &str) -> Option<&str> {
+// Coerce a generic JSON value into a `Commit`. Accepts a JSON object or a
+// flattened `[key, value, key, value, ...]` array, tolerating decorated keys
+// like `_type`. Returns `None` if no commit-shaped fields are present.
+fn commit_from_value(value: &serde_json::Value) -> Option<Commit> {
+    let pairs: Vec<(String, String)> = match value {
+        serde_json::Value::Object(map) => map
+            .iter()
+            .map(|(k, v)| (k.clone(), value_to_string(v)))
+            .collect(),
+        serde_json::Value::Array(items) if items.len() % 2 == 0 => items
+            .chunks(2)
+            .map(|pair| (value_to_string(&pair[0]), value_to_string(&pair[1])))
+            .collect(),
+        _ => return None,
+    };
+
+    let mut commit = Commit::default();
+    let mut matched = false;
+    for (key, val) in pairs {
+        match normalize_key(&key).as_str() {
+            "type" => {
+                commit.r#type = val;
+                matched = true;
+            }
+            "scope" => {
+                commit.scope = val;
+                matched = true;
+            }
+            "message" => {
+                commit.message = val;
+                matched = true;
+            }
+            _ => {}
+        }
+    }
+
+    if matched && (!commit.r#type.trim().is_empty() || !commit.message.trim().is_empty()) {
+        Some(commit)
+    } else {
+        None
+    }
+}
+
+// Reduce a key to its bare alphabetic identifier so decorated variants such as
+// `_type`, `Type ` or `"scope"` all normalize to the canonical field name.
+fn normalize_key(key: &str) -> String {
+    key.chars()
+        .filter(char::is_ascii_alphabetic)
+        .collect::<String>()
+        .to_lowercase()
+}
+
+// Render a JSON scalar as a plain string; strings are unquoted, null is empty,
+// and numbers/bools use their JSON text.
+fn value_to_string(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+// Find the first balanced JSON object or array in `s`. String and escape aware,
+// so delimiters inside JSON string values don't throw off the depth count.
+// Skips leading garbage like a stray `{` that never closes.
+fn extract_json_fragment(s: &str) -> Option<&str> {
     let bytes = s.as_bytes();
-    for (start, _) in s.match_indices('{') {
-        if let Some(end) = match_object(bytes, start) {
+    for (start, m) in s.match_indices(['{', '[']) {
+        let (open, close) = if m == "{" { (b'{', b'}') } else { (b'[', b']') };
+        if let Some(end) = match_delimited(bytes, start, open, close) {
             return Some(&s[start..=end]);
         }
     }
     None
 }
 
-// Forward brace-match from the opening `{` at `start`; returns the byte index
-// of the matching `}`, or `None` if the object never closes.
-fn match_object(bytes: &[u8], start: usize) -> Option<usize> {
+// Forward-match the delimiter opened at `start`; returns the byte index of the
+// matching close delimiter, or `None` if it never closes.
+fn match_delimited(bytes: &[u8], start: usize, open: u8, close: u8) -> Option<usize> {
     let mut depth = 0i32;
     let mut in_str = false;
     let mut escaped = false;
@@ -280,16 +362,15 @@ fn match_object(bytes: &[u8], start: usize) -> Option<usize> {
             }
             continue;
         }
-        match b {
-            b'"' => in_str = true,
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i);
-                }
+        if b == b'"' {
+            in_str = true;
+        } else if b == open {
+            depth += 1;
+        } else if b == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i);
             }
-            _ => {}
         }
     }
     None
@@ -592,5 +673,52 @@ mod tests {
     #[test]
     fn parse_commit_errors_on_no_json() {
         assert!(parse_commit("I could not generate a commit message.").is_err());
+    }
+
+    #[test]
+    fn parse_commit_handles_flattened_key_value_array() {
+        // Exact shape emitted by a local model: an object flattened into a
+        // `[key, value, ...]` array with underscore-decorated keys.
+        let raw = r#"["_type", "chore", "_scope", "dependencies", "_message", "Add Microsoft.OpenApi package to pin version for security fix."]"#;
+        let c = parse_commit(raw).unwrap();
+        assert_eq!(c.r#type, "chore");
+        assert_eq!(c.scope, "dependencies");
+        assert_eq!(
+            c.message,
+            "Add Microsoft.OpenApi package to pin version for security fix."
+        );
+    }
+
+    #[test]
+    fn parse_commit_handles_underscore_keyed_object() {
+        let raw = r#"{"_type": "feat", "_scope": "api", "_message": "add endpoint"}"#;
+        let c = parse_commit(raw).unwrap();
+        assert_eq!(c.r#type, "feat");
+        assert_eq!(c.scope, "api");
+        assert_eq!(c.message, "add endpoint");
+    }
+
+    #[test]
+    fn parse_commit_extracts_flattened_array_from_prose() {
+        let raw = "Here you go:\n[\"type\", \"fix\", \"scope\", \"\", \"message\", \"off-by-one\"]";
+        let c = parse_commit(raw).unwrap();
+        assert_eq!(c.r#type, "fix");
+        assert_eq!(c.scope, "");
+        assert_eq!(c.message, "off-by-one");
+    }
+
+    #[test]
+    fn parse_commit_reads_three_element_array_positionally() {
+        // serde deserializes a struct from a 3-element sequence positionally
+        // (type, scope, message), which is a reasonable interpretation.
+        let c = parse_commit(r#"["fix", "api", "off-by-one"]"#).unwrap();
+        assert_eq!(c.r#type, "fix");
+        assert_eq!(c.scope, "api");
+        assert_eq!(c.message, "off-by-one");
+    }
+
+    #[test]
+    fn parse_commit_rejects_array_without_commit_keys() {
+        assert!(parse_commit(r#"["a", "b", "c", "d"]"#).is_err());
     }
 }
