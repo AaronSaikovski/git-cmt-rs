@@ -133,11 +133,13 @@ entirely, use `OPENAI_RESPONSE_FORMAT=none`.
 Local models don't always honor `response_format` and may wrap their JSON in
 markdown code fences, prefix it with a `json` label, or emit reasoning text
 first (e.g. Qwen3's `<think>` blocks, Gemma's fenced output). Some even return
-the fields in the wrong shape — an object with decorated keys like `_type`, or
-a flattened `["_type", "chore", "_scope", "deps", ...]` array instead of an
-object. Rather than failing, `git-cmt-rs` first tries to parse the raw response,
-then coerces generic JSON into a commit — normalizing decorated keys and pairing
-up flattened key/value arrays. As a last resort it extracts the first balanced
+the fields in the wrong shape — an object with decorated keys like `_type`, a
+flattened `["_type", "chore", "_scope", "deps", ...]` array instead of an
+object, or an array of one commit object per changed file. Rather than failing,
+`git-cmt-rs` first tries to parse the raw response, then coerces generic JSON
+into a commit — normalizing decorated keys, pairing up flattened key/value
+arrays, and taking the first entry from an array of commit objects. As a last
+resort it extracts the first balanced
 `{ ... }` object or `[ ... ]` array embedded in the text. The scan is string-
 and escape-aware, so braces inside the commit message don't throw it off. In
 practice this means the tool works with a wide range of local models regardless

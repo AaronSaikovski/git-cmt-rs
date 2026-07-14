@@ -277,8 +277,16 @@ fn commit_from_value(value: &serde_json::Value) -> Option<Commit> {
             .iter()
             .map(|(k, v)| (k.clone(), value_to_string(v)))
             .collect(),
-        serde_json::Value::Array(items) if items.len() % 2 == 0 => items
+        // An array of objects is a list of commit candidates (some models emit
+        // one per file). Coerce the first that yields a commit-shaped value.
+        serde_json::Value::Array(items) if items.iter().any(serde_json::Value::is_object) => {
+            return items.iter().find_map(commit_from_value);
+        }
+        // Flattened `[key, value, ...]` array. Pair adjacent elements,
+        // tolerating a dangling trailing key with no value (odd length).
+        serde_json::Value::Array(items) => items
             .chunks(2)
+            .filter(|pair| pair.len() == 2)
             .map(|pair| (value_to_string(&pair[0]), value_to_string(&pair[1])))
             .collect(),
         _ => return None,
@@ -720,5 +728,29 @@ mod tests {
     #[test]
     fn parse_commit_rejects_array_without_commit_keys() {
         assert!(parse_commit(r#"["a", "b", "c", "d"]"#).is_err());
+    }
+
+    #[test]
+    fn parse_commit_handles_odd_length_flattened_array() {
+        // A flattened array with a dangling trailing key (no value). Pair what
+        // we can and drop the orphan rather than failing.
+        let raw = r#"["_type", "chore", "_scope", "deps", "message"]"#;
+        let c = parse_commit(raw).unwrap();
+        assert_eq!(c.r#type, "chore");
+        assert_eq!(c.scope, "deps");
+        assert_eq!(c.message, "");
+    }
+
+    #[test]
+    fn parse_commit_reads_first_of_array_of_objects() {
+        // Some models emit one commit object per changed file. Take the first.
+        let raw = r#"[{"type": "docs", "scope": ".github/workflows/api-deploy-reusable.yml", "message": "Remove Stripe price ID config from API deploy workflow"}, {"type": "docs", "scope": ".github/workflows/infra-deploy-reusable.yml", "message": "Remove Stripe price ID handling from infra deploy workflow"}]"#;
+        let c = parse_commit(raw).unwrap();
+        assert_eq!(c.r#type, "docs");
+        assert_eq!(c.scope, ".github/workflows/api-deploy-reusable.yml");
+        assert_eq!(
+            c.message,
+            "Remove Stripe price ID config from API deploy workflow"
+        );
     }
 }
