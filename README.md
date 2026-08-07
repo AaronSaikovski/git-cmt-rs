@@ -167,7 +167,15 @@ Usage: git-cmt-rs [OPTIONS]
 Options:
   -a, --auto     Accept the generated message without opening the editor and
                  push without prompting for confirmation
+  -v, --version  Print the version and exit
   -h, --help     Print this help message
+```
+
+The version is read from `Cargo.toml` at build time:
+
+```bash
+$ git-cmt-rs -v
+git-cmt-rs 1.0.4
 ```
 
 ### Auto mode
