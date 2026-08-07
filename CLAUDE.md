@@ -34,18 +34,33 @@ cargo test
 Tests live in `#[cfg(test)] mod tests` at the bottom of `src/main.rs` and
 cover the pure functions (`build_response_format`, `build_commit_line`,
 `Commit` deserialization, `parse_commit` tolerant parsing — including
-flattened `[key, value, ...]` arrays and underscore-decorated keys — and
-`ResponseFormat` wire-format serialization).
+flattened `[key, value, ...]` arrays and underscore-decorated keys —
+`parse_args`/`early_exit_message` CLI flag handling, and `ResponseFormat`
+wire-format serialization).
 Network, git, and stdin paths are deliberately untested — the CLI is a
 one-shot orchestrator over real subprocesses.
+
+`tests/cli.rs` holds integration tests that run the built binary from a
+scratch directory outside any git repository, asserting that `-v`/`--version`,
+`-h`/`--help`, and argument errors all short-circuit *before* `stage_all_changes()`
+shells out to git. Add to these if new flags are meant to skip the commit flow.
 
 ## Architecture
 
 The entire application lives in **src/main.rs** as a single-file design.
 
+`scripts/git-cmt` is an optional wrapper that pins a local backend via
+`OPENAI_BASE_URL`/`OPENAI_MODEL` and `exec`s the binary with `"$@"`. When adding
+a flag, remember users may invoke through this wrapper — a wrapper missing `"$@"`
+swallows flags and silently runs the default commit flow.
+
 ### Flow
 
-`stage_all_changes()` → `get_staged_changes()` → `generate_message()` → `parse_commit()` → `build_commit_line()` → `git commit -e` → `confirm_push()` → `git push`
+`parse_args()` → `stage_all_changes()` → `get_staged_changes()` → `generate_message()` → `parse_commit()` → `build_commit_line()` → `git commit -e` → `confirm_push()` → `git push`
+
+The `-a`/`--auto` flag drops the `-e` from `git commit` and skips
+`confirm_push()` (always pushes); `-h`/`--help` prints `USAGE` and exits;
+`-v`/`--version` prints `VERSION` (from `CARGO_PKG_VERSION`) and exits.
 
 ### Key Components
 

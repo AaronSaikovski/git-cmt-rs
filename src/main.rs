@@ -6,6 +6,61 @@ use std::process::{Command, Stdio};
 
 const MAX_DIFF_CHARS: usize = 3072;
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+const USAGE: &str = "\
+git-cmt-rs - AI-powered Conventional Commit message generator
+
+Usage: git-cmt-rs [OPTIONS]
+
+Options:
+  -a, --auto     Accept the generated message without opening the editor and
+                 push without prompting for confirmation
+  -v, --version  Print the version and exit
+  -h, --help     Print this help message";
+
+// ---------- CLI ----------
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Args {
+    /// Skip the editor review and the push confirmation prompt.
+    auto: bool,
+    /// Print usage and exit.
+    help: bool,
+    /// Print the version and exit.
+    version: bool,
+}
+
+fn parse_args<I, S>(args: I) -> Result<Args>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut parsed = Args::default();
+
+    for arg in args {
+        match arg.as_ref() {
+            "-a" | "--auto" => parsed.auto = true,
+            "-v" | "--version" => parsed.version = true,
+            "-h" | "--help" => parsed.help = true,
+            other => return Err(anyhow!("unknown argument '{other}'\n\n{USAGE}")),
+        }
+    }
+
+    Ok(parsed)
+}
+
+/// Text to print before exiting for the informational flags, if either was
+/// requested. `--help` wins when both are passed.
+fn early_exit_message(args: &Args) -> Option<String> {
+    if args.help {
+        Some(USAGE.to_string())
+    } else if args.version {
+        Some(format!("git-cmt-rs {VERSION}"))
+    } else {
+        None
+    }
+}
+
 // ---------- Domain types ----------
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Commit {
@@ -419,6 +474,19 @@ fn confirm_push() -> Result<bool> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args = match parse_args(env::args().skip(1)) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(2);
+        }
+    };
+
+    if let Some(message) = early_exit_message(&args) {
+        println!("{message}");
+        return Ok(());
+    }
+
     match stage_all_changes() {
         Ok(_) => eprintln!("Staged all changes with `git add .`"),
         Err(e) => {
@@ -452,9 +520,14 @@ async fn main() -> Result<()> {
 
     let line = build_commit_line(&commit);
 
-    // Run: git commit -e -m "<line>"
-    let status = Command::new("git")
-        .args(["commit", "-e", "-m", &line])
+    // Run: git commit [-e] -m "<line>" (-e opens the editor unless --auto)
+    let mut commit_cmd = Command::new("git");
+    commit_cmd.arg("commit");
+    if !args.auto {
+        commit_cmd.arg("-e");
+    }
+    let status = commit_cmd
+        .args(["-m", &line])
         .status()
         .context("failed to run `git commit`")?;
 
@@ -464,12 +537,17 @@ async fn main() -> Result<()> {
 
     eprintln!("Commit created successfully.");
 
-    // Ask for confirmation before pushing
-    let should_push = match confirm_push() {
-        Ok(confirmed) => confirmed,
-        Err(e) => {
-            eprintln!("Error during push confirmation: {e}");
-            std::process::exit(1);
+    // Ask for confirmation before pushing (skipped with --auto)
+    let should_push = if args.auto {
+        eprintln!("Auto mode: pushing without confirmation.");
+        true
+    } else {
+        match confirm_push() {
+            Ok(confirmed) => confirmed,
+            Err(e) => {
+                eprintln!("Error during push confirmation: {e}");
+                std::process::exit(1);
+            }
         }
     };
 
@@ -502,6 +580,188 @@ mod tests {
 
     fn empty_schema() -> serde_json::Value {
         serde_json::json!({})
+    }
+
+    // ---------- parse_args ----------
+
+    #[test]
+    fn args_default_to_interactive() {
+        let args = parse_args(Vec::<String>::new()).unwrap();
+        assert_eq!(args, Args::default());
+        assert!(!args.auto);
+        assert!(!args.help);
+        assert!(!args.version);
+    }
+
+    #[test]
+    fn args_short_auto_flag() {
+        assert!(parse_args(["-a"]).unwrap().auto);
+    }
+
+    #[test]
+    fn args_long_auto_flag() {
+        assert!(parse_args(["--auto"]).unwrap().auto);
+    }
+
+    #[test]
+    fn args_help_flags() {
+        assert!(parse_args(["-h"]).unwrap().help);
+        assert!(parse_args(["--help"]).unwrap().help);
+    }
+
+    #[test]
+    fn args_version_flags() {
+        assert!(parse_args(["-v"]).unwrap().version);
+        assert!(parse_args(["--version"]).unwrap().version);
+    }
+
+    #[test]
+    fn args_each_flag_sets_only_its_own_field() {
+        let auto = parse_args(["-a"]).unwrap();
+        assert_eq!(
+            auto,
+            Args {
+                auto: true,
+                help: false,
+                version: false
+            }
+        );
+
+        let help = parse_args(["-h"]).unwrap();
+        assert_eq!(
+            help,
+            Args {
+                auto: false,
+                help: true,
+                version: false
+            }
+        );
+
+        let version = parse_args(["-v"]).unwrap();
+        assert_eq!(
+            version,
+            Args {
+                auto: false,
+                help: false,
+                version: true
+            }
+        );
+    }
+
+    #[test]
+    fn args_repeated_and_combined_flags() {
+        let args = parse_args(["-a", "--auto", "--help", "-v"]).unwrap();
+        assert!(args.auto);
+        assert!(args.help);
+        assert!(args.version);
+    }
+
+    #[test]
+    fn args_auto_and_version_together() {
+        let args = parse_args(["-a", "-v"]).unwrap();
+        assert!(args.auto);
+        assert!(args.version);
+        assert!(!args.help);
+    }
+
+    #[test]
+    fn args_order_does_not_matter() {
+        assert_eq!(
+            parse_args(["-a", "-v", "-h"]).unwrap(),
+            parse_args(["-h", "-v", "-a"]).unwrap()
+        );
+    }
+
+    #[test]
+    fn version_is_non_empty_and_matches_cargo_manifest() {
+        assert!(!VERSION.is_empty());
+        assert_eq!(VERSION, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn args_unknown_flag_errors_with_usage() {
+        let err = parse_args(["--nope"]).unwrap_err().to_string();
+        assert!(err.contains("unknown argument '--nope'"));
+        assert!(err.contains("Usage: git-cmt-rs"));
+    }
+
+    #[test]
+    fn args_unknown_flag_after_valid_flags_still_errors() {
+        let err = parse_args(["-a", "-v", "-x"]).unwrap_err().to_string();
+        assert!(err.contains("unknown argument '-x'"));
+    }
+
+    #[test]
+    fn args_are_case_sensitive() {
+        assert!(parse_args(["-A"]).is_err());
+        assert!(parse_args(["--AUTO"]).is_err());
+        assert!(parse_args(["-V"]).is_err());
+    }
+
+    #[test]
+    fn args_reject_empty_and_bare_dash_arguments() {
+        assert!(parse_args([""]).is_err());
+        assert!(parse_args(["-"]).is_err());
+        assert!(parse_args(["--"]).is_err());
+    }
+
+    #[test]
+    fn args_reject_clustered_short_flags() {
+        // `-av` is not expanded into `-a -v`; it is rejected rather than
+        // silently ignored.
+        assert!(parse_args(["-av"]).is_err());
+    }
+
+    #[test]
+    fn args_reject_inline_flag_values() {
+        assert!(parse_args(["--auto=true"]).is_err());
+    }
+
+    // ---------- early_exit_message ----------
+
+    #[test]
+    fn early_exit_message_none_for_normal_run() {
+        assert!(early_exit_message(&Args::default()).is_none());
+        assert!(early_exit_message(&parse_args(["-a"]).unwrap()).is_none());
+    }
+
+    #[test]
+    fn early_exit_message_prints_usage_for_help() {
+        let out = early_exit_message(&parse_args(["-h"]).unwrap()).unwrap();
+        assert_eq!(out, USAGE);
+    }
+
+    #[test]
+    fn early_exit_message_prints_version_for_version_flag() {
+        let out = early_exit_message(&parse_args(["-v"]).unwrap()).unwrap();
+        assert_eq!(out, format!("git-cmt-rs {VERSION}"));
+        assert!(out.contains(VERSION));
+    }
+
+    #[test]
+    fn early_exit_message_help_wins_over_version() {
+        let out = early_exit_message(&parse_args(["-v", "-h"]).unwrap()).unwrap();
+        assert_eq!(out, USAGE);
+    }
+
+    #[test]
+    fn early_exit_message_short_circuits_auto_run() {
+        // `-a -v` must not start committing; the version output takes over.
+        let out = early_exit_message(&parse_args(["-a", "-v"]).unwrap()).unwrap();
+        assert_eq!(out, format!("git-cmt-rs {VERSION}"));
+    }
+
+    #[test]
+    fn args_positional_value_is_rejected() {
+        let err = parse_args(["main"]).unwrap_err().to_string();
+        assert!(err.contains("unknown argument 'main'"));
+    }
+
+    #[test]
+    fn usage_documents_all_flags() {
+        assert!(USAGE.contains("-a, --auto"));
+        assert!(USAGE.contains("-v, --version"));
+        assert!(USAGE.contains("-h, --help"));
     }
 
     // ---------- build_response_format ----------
