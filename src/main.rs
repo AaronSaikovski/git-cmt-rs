@@ -6,6 +6,43 @@ use std::process::{Command, Stdio};
 
 const MAX_DIFF_CHARS: usize = 3072;
 
+const USAGE: &str = "\
+git-cmt-rs - AI-powered Conventional Commit message generator
+
+Usage: git-cmt-rs [OPTIONS]
+
+Options:
+  -a, --auto     Accept the generated message without opening the editor and
+                 push without prompting for confirmation
+  -h, --help     Print this help message";
+
+// ---------- CLI ----------
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Args {
+    /// Skip the editor review and the push confirmation prompt.
+    auto: bool,
+    /// Print usage and exit.
+    help: bool,
+}
+
+fn parse_args<I, S>(args: I) -> Result<Args>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut parsed = Args::default();
+
+    for arg in args {
+        match arg.as_ref() {
+            "-a" | "--auto" => parsed.auto = true,
+            "-h" | "--help" => parsed.help = true,
+            other => return Err(anyhow!("unknown argument '{other}'\n\n{USAGE}")),
+        }
+    }
+
+    Ok(parsed)
+}
+
 // ---------- Domain types ----------
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Commit {
@@ -419,6 +456,19 @@ fn confirm_push() -> Result<bool> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args = match parse_args(env::args().skip(1)) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(2);
+        }
+    };
+
+    if args.help {
+        println!("{USAGE}");
+        return Ok(());
+    }
+
     match stage_all_changes() {
         Ok(_) => eprintln!("Staged all changes with `git add .`"),
         Err(e) => {
@@ -452,9 +502,14 @@ async fn main() -> Result<()> {
 
     let line = build_commit_line(&commit);
 
-    // Run: git commit -e -m "<line>"
-    let status = Command::new("git")
-        .args(["commit", "-e", "-m", &line])
+    // Run: git commit [-e] -m "<line>" (-e opens the editor unless --auto)
+    let mut commit_cmd = Command::new("git");
+    commit_cmd.arg("commit");
+    if !args.auto {
+        commit_cmd.arg("-e");
+    }
+    let status = commit_cmd
+        .args(["-m", &line])
         .status()
         .context("failed to run `git commit`")?;
 
@@ -464,12 +519,17 @@ async fn main() -> Result<()> {
 
     eprintln!("Commit created successfully.");
 
-    // Ask for confirmation before pushing
-    let should_push = match confirm_push() {
-        Ok(confirmed) => confirmed,
-        Err(e) => {
-            eprintln!("Error during push confirmation: {e}");
-            std::process::exit(1);
+    // Ask for confirmation before pushing (skipped with --auto)
+    let should_push = if args.auto {
+        eprintln!("Auto mode: pushing without confirmation.");
+        true
+    } else {
+        match confirm_push() {
+            Ok(confirmed) => confirmed,
+            Err(e) => {
+                eprintln!("Error during push confirmation: {e}");
+                std::process::exit(1);
+            }
         }
     };
 
@@ -502,6 +562,58 @@ mod tests {
 
     fn empty_schema() -> serde_json::Value {
         serde_json::json!({})
+    }
+
+    // ---------- parse_args ----------
+
+    #[test]
+    fn args_default_to_interactive() {
+        let args = parse_args(Vec::<String>::new()).unwrap();
+        assert_eq!(args, Args::default());
+        assert!(!args.auto);
+        assert!(!args.help);
+    }
+
+    #[test]
+    fn args_short_auto_flag() {
+        assert!(parse_args(["-a"]).unwrap().auto);
+    }
+
+    #[test]
+    fn args_long_auto_flag() {
+        assert!(parse_args(["--auto"]).unwrap().auto);
+    }
+
+    #[test]
+    fn args_help_flags() {
+        assert!(parse_args(["-h"]).unwrap().help);
+        assert!(parse_args(["--help"]).unwrap().help);
+    }
+
+    #[test]
+    fn args_repeated_and_combined_flags() {
+        let args = parse_args(["-a", "--auto", "--help"]).unwrap();
+        assert!(args.auto);
+        assert!(args.help);
+    }
+
+    #[test]
+    fn args_unknown_flag_errors_with_usage() {
+        let err = parse_args(["--nope"]).unwrap_err().to_string();
+        assert!(err.contains("unknown argument '--nope'"));
+        assert!(err.contains("Usage: git-cmt-rs"));
+    }
+
+    #[test]
+    fn args_positional_value_is_rejected() {
+        let err = parse_args(["main"]).unwrap_err().to_string();
+        assert!(err.contains("unknown argument 'main'"));
+    }
+
+    #[test]
+    fn usage_documents_both_flags() {
+        assert!(USAGE.contains("-a, --auto"));
+        assert!(USAGE.contains("-h, --help"));
     }
 
     // ---------- build_response_format ----------

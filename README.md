@@ -20,6 +20,7 @@ This project is a Rust implementation of the Go based git-cmd project found [her
 - 🎯 **Smart Analysis**: Understands code changes and suggests contextually appropriate messages
 - ✅ **Push Confirmation**: Asks for y/n confirmation before pushing to remote
 - ⚡ **Interactive**: Opens your editor for final review and editing before committing
+- 🚀 **Auto mode**: `-a` / `--auto` skips the editor and the push prompt for a one-command commit-and-push
 - 📦 **Auto-staging**: Automatically stages all changes with `git add .` before analysis
 - 🔍 **Diff-aware**: Analyzes changes to generate contextually appropriate messages
 - 📏 **Length-aware**: Keeps commit messages concise (50 chars max for description)
@@ -158,15 +159,39 @@ of how chatty or malformed their formatting is.
 
 The tool automatically stages all changes with `git add .` before analyzing and generating a commit message.
 
+### Command-line options
+
+```
+Usage: git-cmt-rs [OPTIONS]
+
+Options:
+  -a, --auto     Accept the generated message without opening the editor and
+                 push without prompting for confirmation
+  -h, --help     Print this help message
+```
+
+### Auto mode
+
+Pass `-a` (or `--auto`) to commit and push in a single step — no editor to save
+and quit, no `y` to type at the push prompt:
+
+```bash
+git-cmt-rs -a
+```
+
+This runs `git commit -m "<generated message>"` (without `-e`) and then pushes
+immediately. Use it when you trust the generated message; omit it when you want
+to review or edit before committing.
+
 ## How it works
 
 1. **Auto-staging**: Stages all changes with `git add .`
 2. **Diff Analysis**: Reads staged changes with `git diff --cached -b` (truncated to 3072 chars if necessary)
 3. **AI Processing**: Sends the diff to the configured LLM backend (OpenAI / Ollama / proxy) with structured prompts; response format defaults to `json_object` for broad compatibility, with opt-in `json_schema` for hosted OpenAI
 4. **Message Generation**: Produces a commit object with `type`, `scope`, and `message`, tolerating fenced or prose-wrapped JSON from local models (see [Robust JSON parsing](#robust-json-parsing))
-5. **Interactive Commit**: Opens your editor with the message for final review and editing
+5. **Interactive Commit**: Opens your editor with the message for final review and editing (skipped with `-a`)
 6. **Create Commit**: Runs `git commit` with the approved message
-7. **Push Confirmation**: Asks user to confirm push to remote (y/n)
+7. **Push Confirmation**: Asks user to confirm push to remote (y/n) (skipped with `-a`, which always pushes)
 8. **Final Push**: Runs `git push` if confirmed, or exits with commit saved locally if declined
 
 ## Commit Message Format
@@ -211,6 +236,18 @@ Parsed commit: type='fix', scope='api', message='resolve null pointer in validat
 Commit created successfully.
 Push commit to remote? (y/n): n
 Push cancelled. Commit saved locally.
+```
+
+### Auto Mode (No Prompts)
+
+```bash
+$ git-cmt-rs -a
+Staged all changes with `git add .`
+Staged diff found; generating message for changes...
+Parsed commit: type='chore', scope='deps', message='bump reqwest to 0.12.9'
+Commit created successfully.
+Auto mode: pushing without confirmation.
+Changes pushed successfully!
 ```
 
 ### Keeping Commit Local

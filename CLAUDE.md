@@ -34,8 +34,9 @@ cargo test
 Tests live in `#[cfg(test)] mod tests` at the bottom of `src/main.rs` and
 cover the pure functions (`build_response_format`, `build_commit_line`,
 `Commit` deserialization, `parse_commit` tolerant parsing — including
-flattened `[key, value, ...]` arrays and underscore-decorated keys — and
-`ResponseFormat` wire-format serialization).
+flattened `[key, value, ...]` arrays and underscore-decorated keys —
+`parse_args` CLI flag handling, and `ResponseFormat` wire-format
+serialization).
 Network, git, and stdin paths are deliberately untested — the CLI is a
 one-shot orchestrator over real subprocesses.
 
@@ -45,7 +46,10 @@ The entire application lives in **src/main.rs** as a single-file design.
 
 ### Flow
 
-`stage_all_changes()` → `get_staged_changes()` → `generate_message()` → `parse_commit()` → `build_commit_line()` → `git commit -e` → `confirm_push()` → `git push`
+`parse_args()` → `stage_all_changes()` → `get_staged_changes()` → `generate_message()` → `parse_commit()` → `build_commit_line()` → `git commit -e` → `confirm_push()` → `git push`
+
+The `-a`/`--auto` flag drops the `-e` from `git commit` and skips
+`confirm_push()` (always pushes); `-h`/`--help` prints `USAGE` and exits.
 
 ### Key Components
 
