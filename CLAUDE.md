@@ -40,9 +40,19 @@ wire-format serialization).
 Network, git, and stdin paths are deliberately untested — the CLI is a
 one-shot orchestrator over real subprocesses.
 
+`tests/cli.rs` holds integration tests that run the built binary from a
+scratch directory outside any git repository, asserting that `-v`/`--version`,
+`-h`/`--help`, and argument errors all short-circuit *before* `stage_all_changes()`
+shells out to git. Add to these if new flags are meant to skip the commit flow.
+
 ## Architecture
 
 The entire application lives in **src/main.rs** as a single-file design.
+
+`scripts/git-cmt` is an optional wrapper that pins a local backend via
+`OPENAI_BASE_URL`/`OPENAI_MODEL` and `exec`s the binary with `"$@"`. When adding
+a flag, remember users may invoke through this wrapper — a wrapper missing `"$@"`
+swallows flags and silently runs the default commit flow.
 
 ### Flow
 

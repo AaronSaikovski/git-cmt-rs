@@ -48,6 +48,30 @@ cargo build --release
 sudo mv target/release/git-cmt-rs /usr/local/bin/git-cmt-rs
 ```
 
+### Optional: `git-cmt` wrapper for a local backend
+
+`scripts/git-cmt` is a small wrapper that pins `OPENAI_BASE_URL` / `OPENAI_MODEL`
+to a local backend so you don't have to export them in every shell:
+
+```bash
+sudo install -m 755 scripts/git-cmt /usr/local/bin/git-cmt
+```
+
+It forwards all arguments with `exec "$GIT_CMT_RS_BIN" "$@"`, so `git-cmt -a`,
+`git-cmt -v` and `git-cmt -h` behave identically to the bare binary and the exit
+code propagates unchanged.
+
+> **If you hand-rolled a wrapper, check it ends in `git-cmt-rs "$@"`.** A wrapper
+> whose last line is a bare `git-cmt-rs` silently discards every flag you pass —
+> `git-cmt -v` then runs the default commit flow instead of printing the version.
+
+The defaults only apply when a variable is unset, so the environment still wins:
+
+```bash
+OPENAI_MODEL=some-other-model git-cmt -a   # override for one run
+GIT_CMT_RS_BIN=./target/release/git-cmt-rs scripts/git-cmt -v   # test a local build
+```
+
 ## Usage
 
 ### Setup

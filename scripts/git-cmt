@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+#
+# Thin wrapper that points git-cmt-rs at a local backend.
+#
+# Install with:
+#   sudo install -m 755 scripts/git-cmt /usr/local/bin/git-cmt
+#
+# Every argument is forwarded to git-cmt-rs, so `git-cmt -a`, `git-cmt -v`
+# and `git-cmt -h` behave exactly like the bare binary.
+
+set -euo pipefail
+
+# Defaults below are only applied when the variable is unset, so an existing
+# environment (or a one-off `OPENAI_MODEL=... git-cmt`) still wins.
+export OPENAI_BASE_URL="${OPENAI_BASE_URL:-http://127.0.0.1:11436/v1}"
+export OPENAI_MODEL="${OPENAI_MODEL:-Qwen3-14B-MLX-4bit}"
+
+# `exec` hands the process over, so git-cmt-rs's exit code is this script's.
+# "$@" (quoted) forwards each argument intact; $* or unquoted $@ would re-split
+# on whitespace.
+exec "${GIT_CMT_RS_BIN:-git-cmt-rs}" "$@"
