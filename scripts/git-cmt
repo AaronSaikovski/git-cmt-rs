@@ -12,8 +12,8 @@ set -euo pipefail
 
 # Defaults below are only applied when the variable is unset, so an existing
 # environment (or a one-off `OPENAI_MODEL=... git-cmt`) still wins.
-export OPENAI_BASE_URL="${OPENAI_BASE_URL:-http://127.0.0.1:11436/v1}"
-export OPENAI_MODEL="${OPENAI_MODEL:-Qwen3-14B-MLX-4bit}"
+export OPENAI_BASE_URL="${OPENAI_BASE_URL:-http://127.0.0.1:11434/v1}"
+export OPENAI_MODEL="${OPENAI_MODEL:-gemma4:12b-mlx}"
 
 # `exec` hands the process over, so git-cmt-rs's exit code is this script's.
 # "$@" (quoted) forwards each argument intact; $* or unquoted $@ would re-split
