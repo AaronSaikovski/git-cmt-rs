@@ -50,14 +50,15 @@ sudo mv target/release/git-cmt-rs /usr/local/bin/git-cmt-rs
 
 ### Optional: `git-cmt` wrapper for a local backend
 
-`scripts/git-cmt` is a small wrapper that pins `OPENAI_BASE_URL` / `OPENAI_MODEL`
-to a local backend so you don't have to export them in every shell:
+`scripts/git-cmt` is a small wrapper that pins `OPENAI_BASE_URL` and `OPENAI_MODEL`
+to a local backend (default: `http://127.0.0.1:11434/v1` and `gemma4:12b-mlx`)
+so you don't have to export them in every shell:
 
 ```bash
 sudo install -m 755 scripts/git-cmt /usr/local/bin/git-cmt
 ```
 
-It forwards all arguments with `exec "$GIT_CMT_RS_BIN" "$@"`, so `git-cmt -a`,
+It forwards all arguments with `exec "$GIT_CMT_RS_BIN "$@"`, so `git-cmt -a`,
 `git-cmt -v` and `git-cmt -h` behave identically to the bare binary and the exit
 code propagates unchanged.
 
@@ -68,10 +69,15 @@ code propagates unchanged.
 The defaults only apply when a variable is unset, so the environment still wins:
 
 ```bash
-OPENAI_MODEL=some-other-model git-cmt -a   # override for one run
-GIT_CMT_RS_BIN=./target/release/git-cmt-rs scripts/git-cmt -v   # test a local build
-```
+# Use the wrapper's defaults (gemma4:12b-mlx)
+git-cmt -a
 
+# Override the default model
+OPENAI_MODEL=qwen2.5-coder git-cmt -a
+
+# Test a local build with a specific bin path
+GIT_CMT_RS_BIN=./target/release/git-cmt-rs scripts/git-cmt -v
+```
 ## Usage
 
 ### Setup
