@@ -31,7 +31,7 @@ cargo test --all --locked --no-default-features
 cargo test parse_commit                  # focused parser regressions
 cargo test --test cli                    # CLI early-exit contracts
 cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo audit --deny warnings             # requires cargo-audit
 cargo run -- --help                      # non-mutating smoke check
 cargo run                               # stages, generates, commits, may push
@@ -60,8 +60,8 @@ Use help/version for smoke checks. Run the actual commit flow only in an intende
 - `tests/cli.rs`: informational flags and argument-error process contracts.
 - `scripts/git-cmt`: backend defaults and executable override. Preserve `exec "${GIT_CMT_RS_BIN:-git-cmt-rs}" "$@"` so flags and exit status survive the wrapper.
 - `README.md`: installation, backend configuration, CLI usage, and troubleshooting.
-- `.github/workflows/rust-ci.yml`: Ubuntu/macOS/Windows format, lint, build, and tests; Linux security audit.
-- `.github/workflows/release.yml`: `v*` tags build six platform targets and publish archives with SHA256 checksums. Release packaging does not itself run tests or lint.
+- `.github/workflows/rust-ci.yml`: Ubuntu/macOS/Windows format, locked lint/build/tests, and wrapper help/version smoke checks; Linux security audit. Caches distinguish runner architecture and compiler version.
+- `.github/workflows/release.yml`: `v*` tags build six platform targets and publish archives containing the binary, wrapper, README, and license with SHA256 checksums. Only publishing has repository write permission; release packaging does not itself run tests or lint.
 
 ## Runtime/Tooling Preferences
 
