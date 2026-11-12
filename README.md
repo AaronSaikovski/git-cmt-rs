@@ -29,7 +29,7 @@ This project is a Rust implementation of the Go based git-cmd project found [her
 
 ### Prerequisites
 
-- Rust (1.70+ recommended)
+- Rust 1.100.0 or newer, installed through [rustup](https://rustup.rs/)
 - Git
 - One of: an OpenAI API key, a running Ollama instance, or another OpenAI-compatible endpoint
 
@@ -38,8 +38,12 @@ This project is a Rust implementation of the Go based git-cmd project found [her
 ```bash
 git clone https://github.com/AaronSaikovski/git-cmt-rs
 cd git-cmt-rs
+rustup update stable
 cargo build --release
 ```
+
+`rust-toolchain.toml` selects stable Rust with Clippy and rustfmt, matching CI
+and release builds. Run `rustup update stable` to install the latest stable release.
 
 ### Install globally
 
@@ -48,17 +52,16 @@ cargo build --release
 sudo mv target/release/git-cmt-rs /usr/local/bin/git-cmt-rs
 ```
 
-### Optional: `git-cmt` wrapper for a local backend
+### Optional: `git-cmt` wrapper for LM Studio
 
-`scripts/git-cmt` is a small wrapper that pins `OPENAI_BASE_URL` and `OPENAI_MODEL`
-to a local backend (default: `http://127.0.0.1:11434/v1` and `gemma4:12b-mlx`)
-so you don't have to export them in every shell:
+`scripts/git-cmt` defaults to LM Studio at `http://localhost:1235/v1`, model
+`qwen/qwen3.6-27b`, and `OPENAI_RESPONSE_FORMAT=none`. Install it after the binary:
 
 ```bash
 sudo install -m 755 scripts/git-cmt /usr/local/bin/git-cmt
 ```
 
-It forwards all arguments with `exec "$GIT_CMT_RS_BIN "$@"`, so `git-cmt -a`,
+It forwards all arguments with `exec "${GIT_CMT_RS_BIN:-git-cmt-rs}" "$@"`, so `git-cmt -a`,
 `git-cmt -v` and `git-cmt -h` behave identically to the bare binary and the exit
 code propagates unchanged.
 
@@ -66,14 +69,17 @@ code propagates unchanged.
 > whose last line is a bare `git-cmt-rs` silently discards every flag you pass —
 > `git-cmt -v` then runs the default commit flow instead of printing the version.
 
-The defaults only apply when a variable is unset, so the environment still wins:
+Defaults apply when variables are unset or empty; nonempty environment overrides
+win. The wrapper leaves `OPENAI_API_KEY` unchanged. Unset it when LM Studio
+authentication is disabled, or supply the server's token when authentication is
+enabled.
 
 ```bash
-# Use the wrapper's defaults (gemma4:12b-mlx)
-git-cmt -a
+# Use the wrapper's LM Studio defaults (interactive commit review)
+git-cmt
 
-# Override the default model
-OPENAI_MODEL=qwen2.5-coder git-cmt -a
+# Override the server address
+OPENAI_BASE_URL=http://localhost:1234/v1 git-cmt
 
 # Test a local build with a specific bin path
 GIT_CMT_RS_BIN=./target/release/git-cmt-rs scripts/git-cmt -v
@@ -97,7 +103,7 @@ GIT_CMT_RS_BIN=./target/release/git-cmt-rs scripts/git-cmt -v
    export OPENAI_MODEL="gpt-4.1-mini"
    export OPENAI_BASE_URL="https://api.openai.com/v1"
    ```
-3. (Optional) For strict JSON Schema enforcement (hosted OpenAI only):
+3. (Optional) For strict JSON Schema enforcement:
    ```bash
    export OPENAI_RESPONSE_FORMAT="json_schema"
    ```
@@ -121,6 +127,37 @@ unset OPENAI_API_KEY                   # Ollama ignores auth
 The default `OPENAI_RESPONSE_FORMAT` is `json_object`, which Ollama supports.
 Don't set it to `json_schema` — Ollama's `/v1` endpoint doesn't implement
 OpenAI's strict structured-outputs feature.
+
+#### Local LM Studio
+
+Start LM Studio's local server and load a chat model. For the tested server
+on port `1235`:
+
+```bash
+export OPENAI_BASE_URL="http://localhost:1235/v1"
+export OPENAI_MODEL="qwen/qwen3.6-27b"  # use your loaded model's identifier
+export OPENAI_RESPONSE_FORMAT="none"
+unset OPENAI_API_KEY
+```
+
+An API key is not needed when server authentication is disabled. If you enable
+authentication in LM Studio, set `OPENAI_API_KEY` to the server's token.
+Unset or empty keys omit the `Authorization` header entirely.
+
+Use `curl http://localhost:1235/v1/models` to list model identifiers when
+authentication is disabled. These exports also override the `scripts/git-cmt`
+wrapper's backend defaults.
+
+The tested server rejects the default `json_object` format with
+`'response_format.type' must be 'json_schema' or 'text'`. Setting `none` omits
+the field; the prompt still requests JSON. With the tested Qwen model,
+`json_schema` returned empty `content` and put the answer in `reasoning_content`,
+which this app does not read. `none` returned usable JSON in `content`.
+This behavior depends on the model and server configuration.
+
+Run `git-cmt-rs --help` for a non-mutating smoke check. Run `git-cmt-rs` only
+when ready to stage changes and create a commit; `--auto` also pushes without
+confirmation.
 
 #### Local MLX server (Apple Silicon)
 
@@ -305,14 +342,14 @@ Push cancelled. Commit saved locally.
 
 ### Environment Variables
 
-- `OPENAI_API_KEY` – API key (required for hosted OpenAI; optional for Ollama
-  and most local proxies)
+- `OPENAI_API_KEY` – API key (required for hosted OpenAI; optional for LM Studio,
+  Ollama, and other local servers unless authentication is enabled)
 - `OPENAI_MODEL` – model to use (default: `gpt-4.1-mini`)
 - `OPENAI_BASE_URL` – API endpoint (default: `https://api.openai.com/v1`)
 - `OPENAI_RESPONSE_FORMAT` – one of:
   - `json_object` (default) – broad compatibility (OpenAI, Ollama, most proxies)
-  - `json_schema` – strict structured outputs (hosted OpenAI only)
-  - `none` – omit `response_format` entirely (oldest backends)
+  - `json_schema` – strict structured outputs where supported by the backend/model
+  - `none` – omit `response_format` entirely (recommended for the LM Studio setup above)
 - `EDITOR` – editor for reviewing commits (defaults to system default)
 
 ## Error Handling
@@ -340,16 +377,51 @@ Push cancelled. Commit saved locally.
 ### Project Structure
 
 ```
-├── src/main.rs      # Core logic
-├── Cargo.toml       # Dependencies and metadata
-└── README.md        # This file
+├── src/
+│   ├── main.rs      # Workflow orchestration
+│   ├── cli.rs       # Arguments, help/version, and push confirmation
+│   ├── commit.rs    # Commit data, tolerant parsing, and formatting
+│   ├── llm.rs       # Backend configuration and HTTP requests/responses
+│   └── git.rs       # Staging, diffs, commits, and pushes
+├── tests/cli.rs     # Binary-level early-exit tests
+├── scripts/git-cmt  # Optional local-backend launcher
+├── Cargo.toml      # Dependencies and metadata
+├── rust-toolchain.toml
+└── README.md
 ```
+
+`main` coordinates the flow; `llm` uses `commit` to parse model output.
+Git subprocesses and terminal interaction stay in their respective modules.
+Cross-module interfaces are crate-visible, while implementation details remain
+private. Unit tests live alongside the code they exercise.
 
 ### Building
 
 ```bash
 cargo build
 ```
+
+### Testing and linting
+
+```bash
+cargo test --all --locked --no-default-features
+cargo test backend_request              # authentication and LM Studio request regressions
+cargo test --test cli                   # help/version and argument-error contracts
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+```
+
+Unit tests in `src/cli.rs`, `src/commit.rs`, and `src/llm.rs` cover CLI options,
+commit parsing/formatting, and request serialization. Backend request tests
+verify omitted authorization for unset/empty
+keys, bearer authentication for a supplied key, and omission of `response_format`
+for LM Studio's `none` configuration. They build the same HTTP requests used in
+production without contacting a server or changing process environment variables.
+
+Integration tests in `tests/cli.rs` run the binary outside a Git repository to
+verify early exits. Git must be on `PATH`; no API key or running model server is
+needed. Live provider behavior and successful commit/push flows are not covered
+by these tests.
 
 ## License
 

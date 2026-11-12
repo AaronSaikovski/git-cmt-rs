@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Thin wrapper that points git-cmt-rs at a local backend.
+# Thin wrapper that points git-cmt-rs at LM Studio.
 #
 # Install with:
 #   sudo install -m 755 scripts/git-cmt /usr/local/bin/git-cmt
@@ -10,10 +10,10 @@
 
 set -euo pipefail
 
-# Defaults below are only applied when the variable is unset, so an existing
-# environment (or a one-off `OPENAI_MODEL=... git-cmt`) still wins.
-export OPENAI_BASE_URL="${OPENAI_BASE_URL:-http://127.0.0.1:11434/v1}"
-export OPENAI_MODEL="${OPENAI_MODEL:-gemma4:12b-mlx}"
+# Defaults apply when a variable is unset or empty; nonempty overrides win.
+export OPENAI_BASE_URL="${OPENAI_BASE_URL:-http://localhost:1235/v1}"
+export OPENAI_MODEL="${OPENAI_MODEL:-google/gemma-4-12b}"
+export OPENAI_RESPONSE_FORMAT="${OPENAI_RESPONSE_FORMAT:-none}"
 
 # `exec` hands the process over, so git-cmt-rs's exit code is this script's.
 # "$@" (quoted) forwards each argument intact; $* or unquoted $@ would re-split
