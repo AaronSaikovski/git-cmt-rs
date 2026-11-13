@@ -4,7 +4,7 @@ An AI-powered Git commit message generator written in Rust that automatically st
 
 ## Overview
 
-`git-cmt-rs` stages changes with `git add .`, analyzes the staged diff, and generates a commit message using the configured chat-completions backend. The optional `git-cmt` wrapper defaults to LM Studio; the bare binary defaults to hosted OpenAI. Both provide editor review and push confirmation.
+`git-cmt-rs` stages changes with `git add .` by default, analyzes the staged diff, and generates a commit message using the configured chat-completions backend. Use `--staged` to preserve your staging selection, or `--dry-run` to preview a message without changing the repository. The optional `git-cmt` wrapper defaults to LM Studio; the bare binary defaults to hosted OpenAI. Both provide editor review and push confirmation.
 
 Feel free to tweak the code to try different models, providers, or prompt templates. The implementation is simple and hackable.
 
@@ -231,9 +231,11 @@ of how chatty or malformed their formatting is.
 4. After commit, confirm whether to push to remote (y/n).
 5. If confirmed, changes are pushed; if declined, commit stays local.
 
-The tool runs `git add .` in your current directory before analysis. This includes
-untracked files and can overwrite partial staging; failures do not undo staging
-or an already-created commit. The staged diff is sent to the configured backend.
+By default, the tool runs `git add .` in your current directory before analysis.
+This includes untracked files and can overwrite partial staging; use `--staged`
+or `--dry-run` to skip this step. Failures do not undo staging or an
+already-created commit. The staged diff is sent to the configured backend,
+including in dry-run mode.
 
 ### Command-line options
 
@@ -243,6 +245,9 @@ Usage: git-cmt-rs [OPTIONS]
 Options:
   -a, --auto     Accept the generated message without opening the editor and
                  push without prompting for confirmation
+      --dry-run  Print a message for staged changes without staging, committing,
+                 or pushing (overrides --auto; still calls the model)
+      --staged   Use only staged changes; do not run git add
   -v, --version  Print the version and exit
   -h, --help     Print this help message
 ```
@@ -253,6 +258,32 @@ The version is read from `Cargo.toml` at build time:
 $ git-cmt-rs -v
 git-cmt-rs 1.0.5
 ```
+
+### Per-commit staging and previews
+
+These flags apply only to the current invocation; no configuration is saved.
+Select the changes yourself, then choose whether to preview or commit:
+
+```bash
+git add -p
+git-cmt-rs --dry-run  # Print the generated message without changing the repository
+git-cmt-rs --staged   # Review and commit only the staged changes
+```
+
+`--staged` skips `git add .`, preserving unstaged hunks and untracked files.
+Editor review and push confirmation still apply; combine it with `--auto`
+to commit the staged changes and push without either prompt.
+
+`--dry-run` always uses only the existing staged diff, even without `--staged`.
+It prints the generated commit message to stdout and diagnostics to stderr,
+then exits without opening an editor, committing, prompting, or pushing.
+It overrides `--auto`; combining it with `--staged` is also supported.
+Dry-run disables Git text-conversion and external diff helpers to prevent their
+side effects, so custom-rendered or binary-file previews may differ from commits.
+It still sends the staged diff to the configured model, which may be hosted.
+Neither flag generates a message when there are no staged changes.
+Previewing and committing are separate model calls; the message may differ.
+The `git-cmt` wrapper forwards both flags unchanged.
 
 ### Auto mode
 
@@ -267,12 +298,37 @@ This runs `git commit -m "<generated message>"` (without `-e`) and then pushes
 immediately. Use it when you trust the generated message; omit it when you want
 to review or edit before committing.
 
+### Safety and resource limits
+
+- HTTP requests have a 10-second connection timeout and a 120-second total
+  deadline, including response-body reads. These are fixed application limits;
+  slower local models must finish within that deadline.
+- Success and error responses are limited to 1 MiB of decoded body data,
+  including compressed, chunked, and lengthless responses. Oversized responses
+  fail before committing; oversized error bodies are truncated in diagnostics.
+- Model content also has a 1 MiB parser limit. Embedded JSON extraction runs
+  in linear time while preserving tolerant recovery from prose, fences, and
+  stray delimiters.
+- Git diff output is drained using bounded buffers. Only the first 3,072 Unicode
+  characters are retained, plus a truncation marker when needed. Invalid UTF-8
+  anywhere in the diff is still rejected.
+- Generated fields escape terminal controls and Unicode direction overrides
+  before diagnostics, previews, editor review, or commit creation. For example,
+  an escape character becomes literal `\u{1b}` and a newline becomes literal
+  `\n`; ordinary Unicode text remains unchanged. Provider-error diagnostics
+  are escaped too.
+- EOF at push confirmation cancels the push, leaving the commit local.
+  `--auto` still pushes without reading stdin.
+
+These limits do not detect secrets. Review staged changes before sending them
+to a hosted backend.
+
 ## How it works
 
-1. **Auto-staging**: Runs `git add .` in the current directory
+1. **Auto-staging**: Runs `git add .` in the current directory unless `--staged` or `--dry-run` is passed
 2. **Diff Analysis**: Reads staged changes with `git diff --cached -b`, limiting the input to 3,072 Unicode characters plus a truncation marker
 3. **AI Processing**: Sends the diff to the configured backend. The bare binary defaults to `json_object`; the LM Studio wrapper defaults to `none`. Use `json_schema` only where supported by the backend and model.
-4. **Message Generation**: Produces a commit object with `type`, `scope`, and `message`, tolerating fenced or prose-wrapped JSON from local models (see [Robust JSON parsing](#robust-json-parsing))
+4. **Message Generation**: Produces a commit object with `type`, `scope`, and `message`, tolerating fenced or prose-wrapped JSON from local models (see [Robust JSON parsing](#robust-json-parsing)). With `--dry-run`, prints the formatted message and exits here.
 5. **Interactive Commit**: Opens your editor with the message for final review and editing (skipped with `-a`)
 6. **Create Commit**: Runs `git commit` with the approved message
 7. **Push Confirmation**: Asks user to confirm push to remote (y/n) (skipped with `-a`, which always pushes)
@@ -336,7 +392,7 @@ Changes pushed successfully!
 
 ### Keeping Commit Local
 
-Users can respond with `n` or `no` at the push confirmation to keep the commit local without pushing to remote:
+Users can respond with `n` or `no`, or close stdin (EOF), at the push confirmation to keep the commit local without pushing to remote:
 
 ```bash
 $ git-cmt-rs
@@ -371,10 +427,12 @@ endpoint, model, and response-format defaults.
 - **No staged changes** → exits with helpful message if no changes exist
 - **Missing API key** → only an issue when the configured backend requires one; against hosted OpenAI you'll see a 401 with the API's response body
 - **Invalid `OPENAI_RESPONSE_FORMAT`** → exits with the list of valid values (`json_object`, `json_schema`, `none`)
-- **API failures** → shows HTTP status and response body
-- **Invalid JSON** → shows raw model output for debugging
+- **API failures** → shows HTTP status and a bounded, terminal-safe response body
+- **HTTP timeout** → exits without committing when connecting or reading exceeds the deadline
+- **Oversized response/model content** → rejects input above the 1 MiB limit before committing
+- **Invalid JSON** → shows escaped model output for debugging
 - **Commit creation failed** → exits with error message if `git commit` fails
-- **Push declined** → exits gracefully with "Push cancelled. Commit saved locally." when user responds with `n` or `no`
+- **Push declined or EOF** → exits gracefully with "Push cancelled. Commit saved locally." when user responds with `n` or `no`, or stdin closes
 - **Push failed** → shows error if `git push` fails (commit is already saved locally)
 - **Invalid push confirmation input** → prompts user to answer `y/n` again
 
@@ -396,7 +454,9 @@ endpoint, model, and response-format defaults.
 │   ├── commit.rs    # Commit data, tolerant parsing, and formatting
 │   ├── llm.rs       # Backend configuration and HTTP requests/responses
 │   └── git.rs       # Staging, diffs, commits, and pushes
-├── tests/cli.rs     # Binary-level early-exit tests
+├── tests/
+│   ├── cli.rs       # Early exits and dry-run diff-helper safety
+│   └── workflow.rs  # Isolated Git/API workflow regressions
 ├── scripts/git-cmt  # Optional local-backend launcher
 ├── Cargo.toml      # Dependencies and metadata
 ├── rust-toolchain.toml
@@ -407,6 +467,25 @@ endpoint, model, and response-format defaults.
 Git subprocesses and terminal interaction stay in their respective modules.
 Cross-module interfaces are crate-visible, while implementation details remain
 private. Unit tests live alongside the code they exercise.
+
+### Rust style
+
+Follow the general application-code rules in the
+[Google Rust Style Guide](https://google.github.io/styleguide/rustguide.html),
+alongside this repository's conventions:
+
+- Keep the four focused modules and small crate-visible interfaces; keep helpers
+  private and orchestration in `main`.
+- Import items from one module per `use` statement, import types by name, and
+  qualify cross-module function calls.
+- Prefer borrowed data, explicit mode enums instead of ambiguous Boolean
+  parameters, contextual errors, and descriptive `expect` messages for test
+  invariants.
+- Use stable Rust, rustfmt's 100-column default, and warning-free Clippy.
+
+Chromium/Fuchsia-specific build layouts, concurrency restrictions, and test
+frameworks do not apply here. This project retains Cargo, Tokio, and Rust's
+built-in tests; unstable rustfmt options are not required.
 
 ### Building
 
@@ -419,22 +498,31 @@ cargo build
 ```bash
 cargo test --all --locked --no-default-features
 cargo test backend_request              # authentication and LM Studio request regressions
-cargo test --test cli                   # help/version and argument-error contracts
+cargo test --test cli                   # early exits and dry-run diff-helper safety
+cargo test --test workflow              # staging, terminal safety, and EOF cancellation
+cargo test llm::http_tests              # HTTP deadlines and decoded-body limits
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 ```
 
-Unit tests in `src/cli.rs`, `src/commit.rs`, and `src/llm.rs` cover CLI options,
-commit parsing/formatting, and request serialization. Backend request tests
-verify omitted authorization for unset/empty keys, bearer authentication for a
-supplied key, and omission of `response_format`
-for LM Studio's `none` configuration. They build the same HTTP requests used in
-production without contacting a server or changing process environment variables.
+Unit tests alongside all four modules cover CLI parsing, EOF confirmation,
+terminal escaping, tolerant commit parsing, linear extraction edge cases,
+streamed UTF-8 diff truncation, and HTTP request/response behavior. Request
+serialization tests verify authorization handling and response-format
+compatibility without sending requests. HTTP tests use ephemeral loopback
+servers to exercise stalled headers/bodies, response-size boundaries, chunked
+and lengthless bodies, and compressed responses.
 
-Integration tests in `tests/cli.rs` run the binary outside a Git repository to
-verify early exits. Git must be on `PATH`; no API key or running model server is
-needed. Live provider behavior and successful commit/push flows are not covered
-by these tests.
+`tests/cli.rs` verifies informational exits outside Git repositories and checks
+that dry-run does not invoke diff helpers or write textconv cache refs.
+`tests/workflow.rs` uses disposable repositories and a loopback API to verify
+partial staging, empty indexes, terminal-safe previews and errors, and local
+commit creation with push cancellation on EOF. Test scratch directories are
+isolated across concurrent suite processes.
+
+Git must be on `PATH`; tests require no API keys or running model servers.
+Live provider behavior, model accuracy, and successful remote pushes are not
+covered by these tests.
 
 ### CI and releases
 
@@ -459,7 +547,8 @@ This project is open source. See the repository for details.
 
 **"No staged changes found"**
 
-- This occurs when there are no modified files in your working directory. Make sure you have uncommitted changes before running `git-cmt-rs`.
+- With `--staged` or `--dry-run`, select changes first using `git add` or `git add -p`.
+- Without those flags, the invocation directory must contain changes for `git add .` to stage. Whitespace-only differences ignored by `git diff -b` do not produce a message.
 
 **Authentication errors (HTTP 401)**
 
@@ -480,6 +569,10 @@ This project is open source. See the repository for details.
   (`ollama list`).
 - If LM Studio rejects `response_format.type`, set
   `OPENAI_RESPONSE_FORMAT=none`; see [Local LM Studio](#local-lm-studio).
+- Requests must complete within 120 seconds, with at most 10 seconds to connect.
+  Slow model loading or generation can exceed this deadline.
+- Responses larger than 1 MiB after decompression are rejected. Reduce verbose
+  model output or check whether the backend is returning a large error page.
 
 **Editor not opening**
 
@@ -490,7 +583,7 @@ This project is open source. See the repository for details.
 
 **"Push cancelled. Commit saved locally." message**
 
-- This is expected behavior. The user can respond `n` or `no` at the push confirmation prompt to keep the commit local.
+- This is expected after `n`, `no`, or EOF at the push confirmation prompt.
 - The commit is already created and saved; the push is simply skipped.
 - You can push manually later with `git push`.
 
